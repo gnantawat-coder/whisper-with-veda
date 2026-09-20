@@ -79,10 +79,47 @@ enum OverlaySnapshots {
         // mid-grey ground so both the black body and the white bubble can be judged.
         let critterStates: [(String, Critter.Mood, CritterEngine.External, Double, Double)] = [
             ("critter-normal", .normal, .idle, 0, 0), ("critter-listening", .normal, .listening, 0, 0.8), ("critter-happy", .happy, .idle, 0, 0),
-            ("critter-sad", .sad, .idle, 0, 0), ("critter-shy", .shy, .idle, 0, 0), ("critter-bye", .bye, .idle, 0, 0), ("critter-deep", .curious, .idle, 1, 0)]
-        for (name, mood, ext, z, lv) in critterStates {
-            let engine = CritterEngine()
-            engine.settle(mood: mood, external: ext, z: z, level: lv)
+            ("critter-sad", .sad, .idle, 0, 0), ("critter-shy", .shy, .idle, 0, 0), ("critter-bye", .bye, .idle, 0, 0), ("critter-deep", .curious, .idle, 1, 0),
+            ("critter-dizzy", .dizzy, .idle, 0, 0), ("critter-thinking", .normal, .thinking, 0, 0), ("critter-wow", .wow, .idle, 0, 0), ("critter-annoyed", .annoyed, .idle, 0, 0)]
+        // Set pieces at the moment that shows the prop, plus the one-tick effects pinned just after they fired.
+        let sceneShots: [(String, Critter.Scene, Double, Bool, Bool, Bool, String?)] = [
+            ("critter-inflate", .inflate, 2.4, false, false, false, "!!"), ("critter-burst", .inflate, 2.62, true, false, false, nil), ("critter-baby", .inflate, 4.0, false, false, false, "อุแว้~"),
+            ("critter-lightning", .lightning, 0.61, false, false, false, "!!"), ("critter-charred", .lightning, 1.6, false, false, false, "@_@"),
+            ("critter-rain-umbrella", .rainUmbrella, 3.0, false, false, false, "~♪"), ("critter-rain", .rain, 3.0, false, false, false, "TT"),
+            ("critter-balloon", .balloon, 4.0, false, false, false, "ลอย~"), ("critter-balloon-pop", .balloon, 5.42, false, true, false, "!!"),
+            ("critter-manhole-in", .manhole, 1.0, false, false, false, "โดด!"), ("critter-manhole-closed", .manhole, 3.0, false, false, false, nil),
+            ("critter-sneeze", .sneeze, 1.3, false, false, true, "ฮัดเช้ย!"), ("critter-hiccup", .hiccup, 0.95, false, true, false, "ฮึก")]
+        var shots: [(String, CritterEngine)] = critterStates.map { st in let e = CritterEngine(); e.settle(mood: st.1, external: st.2, z: st.3, level: st.4); return (st.0, e) }
+        shots += sceneShots.map { sh in let e = CritterEngine(); e.settle(scene: sh.1, t: sh.2, burst: sh.3, pop: sh.4, droplets: sh.5, bubbleText: sh.6); return (sh.0, e) }
+        let gagShots: [(String, Critter.Scene, Double, Bool, String?)] = [
+            ("critter-eyepop", .eyePop, 1.0, false, "!!!"), ("critter-tornado", .tornado, 1.5, false, "หวืดดด!"),
+            ("critter-spinjump", .spinJump, 0.9, false, "เย้!"), ("critter-levitate", .levitate, 3.0, false, "อืมมม~"), ("critter-ghost", .ghost, 1.5, false, "!!!"), ("critter-star", .shootingStar, 1.3, false, "ดาวตก!"),
+            ("critter-flood-pour", .flood, 2.0, false, "!!"), ("critter-flood-swim", .flood, 6.8, false, "ว่าย ว่าย"), ("critter-flood-pant", .flood, 10.5, false, "ฮึบ… ฮึบ…"),
+            ("critter-plane-climb", .plane, 4.5, false, "เมฆ!"), ("critter-plane-jump", .plane, 6.3, false, "ว้ากกก!"), ("critter-dance", .dance, 1.2, false, "♪♪"),
+            ("critter-ninja-bomb", .ninja, 0.7, false, nil), ("critter-ninja-cloud", .ninja, 1.2, false, "หายตัว!"), ("critter-ninja-door", .ninja, 4.6, false, nil), ("critter-ninja-out", .ninja, 5.2, false, "ทาดา~"),
+            ("critter-box", .box, 2.0, false, "..."), ("critter-melt", .melt, 3.0, false, "ร้อน… ละลาย…"), ("critter-freeze", .freeze, 2.0, false, "แข็ง…"), ("critter-freeze-crack", .freeze, 4.3, false, nil), ("critter-trip", .trip, 1.2, false, "อุ๊ย!"),
+            ("critter-anvil", .pancake, 0.5, false, "…?"), ("critter-pancake", .pancake, 2.0, true, "แบน…"), ("critter-rubber", .rubber, 1.0, false, "ฮ่าฮ่าฮ่า!"),
+            ("critter-dash", .dash, 0.65, false, "บี๊บ บี๊บ!"), ("critter-eat", .eat, 2.0, false, "หง่ำ ๆ"), ("critter-read", .read, 5.0, false, "อ่าน ๆ"), ("critter-hearts", .heartEyes, 1.0, false, "♥♥")]
+        shots += gagShots.map { sh in let e = CritterEngine(); e.settle(scene: sh.1, t: sh.2, pop: sh.3, bubbleText: sh.4); return (sh.0, e) }
+        let weatherShots: [(String, Critter.Weather, Bool, Bool, Critter.Mood, String?)] = [
+            ("critter-sunny", .sunny, false, false, .happy, "^^"), ("critter-heat", .heat, false, false, .hot, "ร้อนน~"), ("critter-wind", .wind, false, false, .worried, "…?"),
+            ("critter-snow", .snow, false, false, .cold, "brr"), ("critter-weather-rain", .rain, true, false, .normal, nil), ("critter-night", .clear, false, true, .sleepy, "zZ"),
+            ("critter-hungry", .clear, false, false, .hungry, "กร๊อกกก"), ("critter-sulky", .clear, false, false, .sulky, "หึ")]
+        // The same faces at playground size, where the LED dots can be judged one by one.
+        for st in critterStates.prefix(2) + critterStates.suffix(4) { let e = CritterEngine(radius: 44, area: Critter.Area(width: 416, height: 272)); e.settle(mood: st.1, external: st.2, z: st.3, level: st.4); shots.append((st.0 + "-big", e)) }
+        for (name, m) in [("critter-happy-big", Critter.Mood.happy), ("critter-sad-big", .sad), ("critter-shy-big", .shy)] { let e = CritterEngine(radius: 44, area: Critter.Area(width: 416, height: 272)); e.settle(mood: m); shots.append((name, e)) }
+        do { let e = CritterEngine(radius: 44, area: Critter.Area(width: 416, height: 272)); e.settle(scene: .heartEyes, t: 1.0, bubbleText: "♥♥"); shots.append(("critter-hearts-big", e)) }
+        do { let e = CritterEngine(radius: 44, area: Critter.Area(width: 416, height: 272)); e.settle(scene: .eyePop, t: 1.0, bubbleText: "!!!"); shots.append(("critter-eyepop-big", e)) }
+        do { let e = CritterEngine(radius: 44, area: Critter.Area(width: 416, height: 272)); e.settle(asleepWithBird: true); shots.append(("critter-sleep-bird-big", e)) }
+        do { let e = CritterEngine(); e.settle(asleepWithBird: true); shots.append(("critter-sleep-bird", e)) }
+        do { let e = CritterEngine(radius: 44, area: Critter.Area(width: 416, height: 272)); e.settle(scene: .plane, t: 4.5, bubbleText: "เมฆ!"); shots.append(("critter-plane-big", e)) }
+        do { let e = CritterEngine(radius: 44, area: Critter.Area(width: 416, height: 272)); e.settle(scene: .flood, t: 2.0, bubbleText: "!!"); shots.append(("critter-flood-big", e)) }
+        do { let e = CritterEngine(radius: 44, area: Critter.Area(width: 416, height: 272)); e.settle(scene: .dance, t: 1.2, bubbleText: "♪♪"); shots.append(("critter-dance-big", e)) }
+        do { let e = CritterEngine(radius: 44, area: Critter.Area(width: 416, height: 272)); e.settle(scene: .ninja, t: 4.6); shots.append(("critter-ninja-door-big", e)) }
+        do { let e = CritterEngine(radius: 44, area: Critter.Area(width: 416, height: 272)); e.settle(scene: .balloon, t: 4.0, bubbleText: "ลอย~"); shots.append(("critter-balloon-big", e)) }
+        do { let e = CritterEngine(radius: 44, area: Critter.Area(width: 416, height: 272)); e.settle(scene: .rainUmbrella, t: 3.0, bubbleText: "~♪"); shots.append(("critter-umbrella-big", e)) }
+        shots += weatherShots.map { sh in let e = CritterEngine(); e.settle(weather: sh.1, umbrella: sh.2, night: sh.3, age: 100, mood: sh.4, bubbleText: sh.5); return (sh.0, e) }
+        for (name, engine) in shots {
             let frame = NSRect(origin: .zero, size: engine.panelSize)
             let window = NSWindow(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false; window.backgroundColor = NSColor(white: 0.55, alpha: 1)

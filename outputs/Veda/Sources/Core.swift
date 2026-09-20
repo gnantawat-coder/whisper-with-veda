@@ -588,6 +588,7 @@ struct ModelDownload {
 enum Critter {
     enum Mood: String, CaseIterable {
         case normal, bored, thinking, sleepy, asleep, curious, happy, done, shy, sad, wow, startled, worried, dizzy, peek, cold, listening, annoyed, bye, back
+        case hungry, sulky, loved, laugh, full, hot, zen, pant, groove
     }
     struct Eye: Equatable {
         var w: Double, h: Double, r: Double, dx: Double, dy: Double
@@ -630,6 +631,17 @@ enum Critter {
         // No hands: the goodbye is a soft smile, a head tilt, and the words.
         .bye:      Expression(front: 1, left: restLeft, right: restRight, tilt: 9, arc: true, says: ["บ๊ายบาย~", "ไปแป๊บ", "เดี๋ยวมา"]),
         .back:     Expression(front: 1, left: restLeft, right: restRight, arc: true, spark: true, says: ["กลับมาแล้ว", "ทาดา~"]),
+        // Care: needs read through posture (droop, turn away) and the words.
+        .hungry:   Expression(front: 1, left: Eye(w: 9, h: 14, r: -10, dx: 0, dy: 6), right: Eye(w: 9, h: 14, r: 10, dx: 0, dy: 6), sy: 0.95, says: ["กร๊อกกก", "หิว…", "ขอกินหน่อย"]),
+        .sulky:    Expression(front: 0, left: Eye(w: 9, h: 12, r: 30, dx: -4, dy: 4), right: Eye(w: 9, h: 12, r: 30, dx: -4, dy: 8), tilt: -5, says: ["หึ", "ไม่คุยด้วย", "..."]),
+        .loved:    Expression(front: 1, left: restLeft, right: restRight, arc: true, blush: true, spark: true, says: ["♥", "♥♥", "ชอบ~"]),
+        .laugh:    Expression(front: 1, left: restLeft, right: restRight, sx: 1.06, sy: 0.96, arc: true, spark: true, says: ["ฮ่าฮ่าฮ่า!", "555", "ฮ่า~"]),
+        .full:     Expression(front: 0.5, left: Eye(w: 9, h: 8, r: 16, dx: 0, dy: 6), right: Eye(w: 9, h: 8, r: 16, dx: 0, dy: 8), sx: 1.1, sy: 1.04, slowBreath: true, says: ["อิ่ม~", "อิ่มจัง"]),
+        .hot:      Expression(front: 0.8, left: Eye(w: 9, h: 12, r: -4, dx: 0, dy: 4), right: Eye(w: 9, h: 12, r: 4, dx: 0, dy: 4), sy: 0.97, tear: true, says: ["ร้อนน~", "ฮ่อก ฮ่อก"]),
+        .zen:      Expression(front: 1, left: Eye(w: 12, h: 3, r: 90, dx: 0, dy: 2), right: Eye(w: 12, h: 3, r: 90, dx: 0, dy: 2), slowBreath: true, says: ["อืมมม~", "สงบ…"]),
+        // Out of breath: half-shut eyes, a sweat drop, and the body heaving (the engine speeds the breath up).
+        .pant:     Expression(front: 0.9, left: Eye(w: 10, h: 9, r: -8, dx: 0, dy: 5), right: Eye(w: 10, h: 9, r: 8, dx: 0, dy: 5), sy: 0.94, tear: true, says: ["ฮึบ… ฮึบ…", "หอบ…"]),
+        .groove:   Expression(front: 1, left: restLeft, right: restRight, spark: true, says: ["♪", "♪♪", "เต้น~"]),
     ]
     /// Eye anchors in the 120-unit face, sliding from the turned pose to the symmetric one.
     static func anchors(front f: Double) -> (left: (x: Double, y: Double), right: (x: Double, y: Double)) {
@@ -782,6 +794,7 @@ enum Critter {
             return m == .deep && now - lastDeepAt < Scheduler.deepMinimumGap ? .roll : m
         }
         static let moodWeights: [(Mood, Double)] = [(.normal, 40), (.shy, 10), (.curious, 12), (.happy, 10), (.bored, 14), (.sleepy, 8), (.wow, 6)]
+        var cartoon = false     // gag reel on: cartoon set pieces join the table
         static func weighted<T>(_ table: [(T, Double)], _ roll: Double) -> T {
             let total = table.reduce(0) { $0 + $1.1 }
             var acc = 0.0
@@ -792,5 +805,369 @@ enum Critter {
         func nextMoodDelay(_ roll: Double) -> Double { let g = Scheduler.moodGap[max(0, min(2, playfulness))]; return g.0 + (g.1 - g.0) * roll }
         func pickMove(_ roll: Double) -> Move { Scheduler.weighted(Scheduler.moveWeights, roll) }
         func pickMood(_ roll: Double) -> Mood { Scheduler.weighted(Scheduler.moodWeights, roll) }
+    }
+}
+
+// MARK: - Critter scenes: rare set pieces with a fixed timeline. Pure: time in → frame out.
+extension Critter {
+    enum Scene: String, CaseIterable {
+        case inflate, lightning, rainUmbrella, rain, balloon, manhole, sneeze, hiccup
+        case eat, read, heartEyes                                    // care
+        case eyePop, tornado, pancake, rubber, dash                 // cartoon gags (eyes and body only — no mouth, ever)
+        case spinJump, levitate, ghost, shootingStar, box, melt, freeze, trip   // more set pieces, eyes and posture only
+        case flood, plane, dance, ninja
+        var isCartoon: Bool { [.eyePop, .tornado, .pancake, .rubber, .dash].contains(self) }
+    }
+    struct Offset: Equatable { var x: Double, y: Double }
+    struct SceneFrame: Equatable {
+        var scale = 1.0          // drawn body size multiplier
+        var hidden = false
+        var charred = 0.0        // 0 normal … 1 burnt
+        var pacifier = 0.0       // baby version after rebirth
+        var umbrella = false, rain = false
+        var balloon = 0.0        // 0 none … 1 fully inflated on its string
+        var bolt = 0.0           // flash intensity this instant
+        var smoke = 0.0          // puffs per second
+        var lift: Double? = nil  // when set, the body hangs this many radii above the floor (physics off)
+        var mood: Mood? = nil
+        var burst = false, pop = false, droplets = false
+        var snot = 0.0           // runny nose after a sneeze
+        var manhole = 0.0        // 0 no cover drawn … 1 cover fully open
+        var manholeShown = false
+        var sink = 0.0           // fraction of the body that has dropped into the hole
+        var prop = false         // draw the engine's prop (food) at the mouth
+        var chew = 0.0           // chewing rhythm amplitude
+        var book = false, hearts = 0.0
+        var eyeScale = 1.0, eyeOut = 0.0, spin = 0.0, flat = 0.0, stretch = 0.0, anvil: Double? = nil, dust = false
+        var spinDeg = 0.0        // whole-body rotation (spin jump, trip)
+        var hopNow: Double? = nil  // engine hops this high on this tick
+        var aura = false, ghost = 0.0, star = 0.0, box = 0.0, ice = 0.0, melt = 0.0, speedLines = 0.0
+        var glass = 0.0, pour = false, water = 0.0, bubbles = false      // flood: water level in radii above the floor
+        var plane: Offset? = nil, clouds = false                          // plane position relative to the body, in radii
+        var disco = false, notes = false
+        var bomb = 0.0, smokeCloud = 0.0, door = 0.0, doorOpen = 0.0   // ninja vanish: bomb falls, cloud bursts, a door lets it back in
+        var dashX = 0.0          // horizontal offset in radii; the painter draws afterimages behind it
+        var driveVx: Double? = nil   // when set, the engine pushes the body sideways this many radii per second
+        var say: String? = nil
+        var done = false
+    }
+    static func sceneDuration(_ s: Scene) -> Double {
+        switch s { case .inflate: return 7.2; case .lightning: return 4.2; case .rainUmbrella, .rain: return 6.5; case .balloon: return 7.5; case .manhole: return 7.6; case .sneeze: return 2.6; case .hiccup: return 2.4
+        case .eat: return 5.0; case .read: return 12.0; case .heartEyes: return 2.6
+        case .eyePop: return 2.6; case .tornado: return 4.2; case .pancake: return 4.6; case .rubber: return 5.0; case .dash: return 3.6
+        case .spinJump: return 2.4; case .levitate: return 6.0; case .ghost: return 4.5; case .shootingStar: return 5.0; case .box: return 6.5; case .melt: return 6.0; case .freeze: return 6.0; case .trip: return 3.2
+        case .flood: return 12.0; case .plane: return 10.5; case .dance: return 8.0; case .ninja: return 7.2 }
+    }
+    /// The frame for a scene at time `t` (seconds since it started). `say` is set only on the tick that should speak.
+    static func sceneFrame(_ s: Scene, t: Double, dt: Double = 1.0 / 60) -> SceneFrame {
+        var f = SceneFrame()
+        func at(_ moment: Double) -> Bool { t >= moment && t - dt < moment }
+        switch s {
+        case .inflate:
+            if t < 2.6 { f.scale = 1 + (t / 2.6) * (t / 2.6) * 1.3; f.mood = t < 1.4 ? .wow : .worried; if at(0.05) { f.say = "…?" }; if at(2.0) { f.say = "!!" } }
+            else if t < 3.6 { f.hidden = true; if at(2.6) { f.burst = true } }
+            else { let g = min(1, (t - 3.6) / 3.0); f.scale = 0.45 + 0.55 * g * g; f.pacifier = max(0, 1 - max(0, g - 0.7) / 0.3); f.mood = g < 0.85 ? .curious : .happy; if at(3.6) { f.say = "อุแว้~" }; if at(6.0) { f.say = "^^" } }
+        case .lightning:
+            if at(0.6) { f.bolt = 1; f.say = "!!" } else if t > 0.6 && t < 0.75 { f.bolt = 1 - (t - 0.6) / 0.15 }
+            f.charred = t < 0.6 ? 0 : t < 3.4 ? 1 : max(0, 1 - (t - 3.4) / 0.8)
+            f.mood = t < 0.6 ? .normal : t < 2.6 ? .dizzy : .worried
+            f.smoke = t > 0.7 && t < 3.2 ? 4 : 0
+            if at(1.2) { f.say = "@_@" }
+        case .rainUmbrella:
+            f.rain = t > 0.3 && t < 6.0; f.umbrella = t > 0.8 && t < 6.3
+            f.mood = t < 0.8 ? .worried : .normal
+            if at(0.3) { f.say = "ฝนมา" }; if at(1.0) { f.say = "~♪" }
+        case .rain:
+            f.rain = t > 0.3 && t < 6.0
+            f.mood = t < 0.6 ? .worried : .cold
+            if t > 0.6 && t < 6.0 { f.driveVx = sin((t - 0.6) * 1.6) * 3.2 }   // rolls left and right looking for shelter
+            if at(0.3) { f.say = "ฝนมา" }; if at(1.2) { f.say = "TT" }; if at(4.0) { f.say = "brr" }
+        case .balloon:
+            f.balloon = min(1, t / 0.9)
+            if t < 0.9 { f.mood = .curious }
+            else if t < 5.4 { let r = (t - 0.9) / 4.5; f.lift = 0.4 + 3.2 * (1 - (1 - r) * (1 - r)); f.mood = .happy; if at(0.9) { f.say = "ลอย~" } }
+            else { f.balloon = 0; f.mood = .startled; if at(5.4) { f.pop = true; f.say = "!!" } }
+        case .manhole:
+            f.manholeShown = true
+            let open: Double
+            if t < 0.7 { open = t / 0.7 } else if t < 1.3 { open = 1 } else if t < 1.8 { open = 1 - (t - 1.3) / 0.5 }
+            else if t < 5.5 { open = 0 } else if t < 6.0 { open = (t - 5.5) / 0.5 } else if t < 6.9 { open = 1 } else { open = max(0, 1 - (t - 6.9) / 0.5) }
+            f.manhole = open
+            if t < 0.7 { f.mood = .curious; if at(0.05) { f.say = "…?" } }
+            else if t < 1.3 { f.sink = (t - 0.7) / 0.6; f.mood = .happy; if at(0.7) { f.say = "โดด!" } }
+            else if t < 6.0 { f.hidden = true }
+            else if t < 6.9 { f.sink = 1 - (t - 6.0) / 0.6; f.mood = .back; if at(6.0) { f.say = "ทาดา~" } }
+            else { f.mood = .happy }
+            if f.sink > 0 && f.sink < 1 { f.hidden = false }
+        case .sneeze:
+            if t < 0.8 { f.scale = 1 + t * 0.12; f.mood = .cold }
+            else { f.mood = t < 1.4 ? .startled : .sad; f.snot = min(1, (t - 0.8) / 0.5); if at(0.8) { f.droplets = true; f.say = "ฮัดเช้ย!" }; if at(1.6) { f.say = "ขอทิชชู่…" } }
+        case .hiccup:
+            f.mood = .normal
+            for k in [0.2, 0.9, 1.6] where at(k) { f.pop = true; f.say = "ฮึก" }
+        case .eat:
+            f.prop = t < 3.8; f.mood = t < 0.5 ? .wow : t < 3.8 ? .happy : .full
+            if t >= 0.5 && t < 3.8 { f.chew = 1 }
+            if at(0.05) { f.say = "ว้าว อาหาร!" }; if at(1.2) { f.say = "หง่ำ ๆ" }; if at(3.8) { f.say = "อิ่ม~" }
+        case .read:
+            f.book = t > 0.4 && t < 11.2; f.mood = t < 0.4 ? .curious : t < 11.2 ? .thinking : .happy
+            if at(0.4) { f.say = "อ่าน ๆ" }; if at(5.0) { f.say = "อืมม" }; if at(11.2) { f.say = "ฉลาดขึ้น!" }
+        case .heartEyes:
+            f.hearts = t < 2.2 ? 1 : max(0, 1 - (t - 2.2) / 0.4); f.mood = .loved
+            if at(0.05) { f.say = "♥♥" }
+        case .eyePop:
+            // Gear 5: the eyeballs fly out of the head on their stalks, the body rocks back, speed lines everywhere.
+            if t < 0.3 { f.scale = 1 - t * 0.25; f.mood = .curious }
+            else if t < 1.9 { let q = min(1, (t - 0.3) / 0.12); f.eyeOut = q; f.speedLines = 1; f.mood = .startled; if at(0.3) { f.say = "!!!"; f.hopNow = 120 } }
+            else { let q = max(0, 1 - (t - 1.9) / 0.3); f.eyeOut = q; f.speedLines = q; f.mood = .dizzy; if at(1.9) { f.pop = true } }
+        case .tornado:
+            if t < 0.4 { f.mood = .startled; f.scale = 1 + t * 0.2 }
+            else if t < 3.2 { f.spin = 1; f.dust = true; f.driveVx = sin((t - 0.4) * 2.2) * 4; f.mood = .dizzy; if at(0.4) { f.say = "หวืดดด!" } }
+            else { f.mood = .dizzy; if at(3.2) { f.say = "@_@" } }
+        case .pancake:
+            if t < 0.9 { f.anvil = t / 0.9; f.mood = .worried; if at(0.05) { f.say = "…?" } }
+            else if t < 3.0 { f.flat = 1; f.anvil = 1; f.mood = .dizzy; if at(0.9) { f.pop = true; f.say = "แบน…" } }
+            else if t < 3.6 { f.flat = 1; f.anvil = 1 - (t - 3.0) / 0.6; f.mood = .dizzy }
+            else { let q = (t - 3.6) / 1.0; f.flat = max(0, (1 - q) * (1 - q)) * (q < 0.3 ? 1 : 1 - 0.4 * sin(q * .pi * 3)); f.mood = q < 0.5 ? .startled : .happy; if at(3.6) { f.pop = true; f.say = "ป๊อป!" } }
+        case .rubber:
+            // Rubber body: stretches tall and springs; the laugh is in the eyes and the bounce.
+            if t < 0.5 { f.mood = .laugh; if at(0.05) { f.say = "ฮ่าฮ่าฮ่า!" } }
+            else if t < 3.6 { let q = (t - 0.5) / 3.1; f.stretch = (0.5 + 0.5 * sin((t - 0.5) * 5)) * (1 - q * 0.5); f.mood = .laugh; if at(1.6) { f.say = "ยืดดด~" }; if at(2.8) { f.say = "555" } }
+            else { f.mood = .happy }
+        case .spinJump:
+            if t < 0.3 { f.scale = 1 - t * 0.3; f.mood = .happy }
+            else if t < 1.5 { f.spinDeg = 360 * (t - 0.3) / 1.2; f.mood = .happy; if at(0.3) { f.hopNow = 420; f.say = "เย้!" } }
+            else { f.mood = .happy }
+        case .levitate:
+            // Floats up with eyes closed, an aura breathing around it, then settles back down.
+            if t < 0.5 { f.mood = .zen }
+            else if t < 4.6 { let q = min(1, (t - 0.5) / 1.6); f.lift = 0.2 + 1.3 * q * q * (3 - 2 * q); f.aura = true; f.mood = .zen; if at(0.5) { f.say = "อืมมม~" } }
+            else if t < 5.3 { let q = (t - 4.6) / 0.7; f.lift = 1.5 * (1 - q * q); f.mood = .zen }
+            else { f.mood = .happy; if at(5.3) { f.say = "สดชื่น" } }
+        case .ghost:
+            f.ghost = t < 0.8 ? t / 0.8 : t < 2.6 ? 1 : t < 3.4 ? 1 - (t - 2.6) / 0.8 : 0
+            if t < 0.8 { f.mood = .normal }
+            else if t < 2.6 { f.mood = .startled; if at(0.8) { f.say = "!!!"; f.hopNow = 200 }; if at(1.8) { f.hopNow = 120 } }
+            else if t < 3.4 { f.mood = .worried }
+            else { f.mood = .curious; if at(3.4) { f.say = "…?" } }
+        case .shootingStar:
+            f.star = t > 0.6 && t < 2.0 ? (t - 0.6) / 1.4 : 0
+            f.mood = t < 0.6 ? .curious : t < 3.6 ? .wow : .happy
+            if at(1.0) { f.say = "ดาวตก!" }; if at(3.6) { f.say = "ขอพร~" }
+        case .box:
+            // A cardboard box drops over it; only the eyes glow through the hole, then it pops out.
+            if t < 0.7 { f.box = t / 0.7; f.mood = .startled; if at(0.05) { f.say = "?" } }
+            else if t < 4.5 { f.box = 1; f.mood = .peek; if at(1.0) { f.say = "..." } }
+            else if t < 5.2 { f.box = 1 - (t - 4.5) / 0.7; f.mood = .happy; if at(4.5) { f.hopNow = 300; f.say = "ทาดา~" } }
+            else { f.mood = .happy }
+        case .melt:
+            if t < 2.5 { f.melt = (t / 2.5) * (t / 2.5); f.mood = .hot; if at(0.1) { f.say = "ร้อน… ละลาย…" } }
+            else if t < 4.0 { f.melt = 1; f.mood = .hot }
+            else if t < 5.5 { let q = (t - 4.0) / 1.5; f.melt = (1 - q) * (1 - q); f.mood = .dizzy; if at(4.0) { f.pop = true } }
+            else { f.mood = .happy; if at(5.5) { f.say = "ฟื้น!" } }
+        case .freeze:
+            if t < 0.6 { f.ice = t / 0.6; f.mood = .cold; if at(0.05) { f.say = "หนาว…" } }
+            else if t < 4.0 { f.ice = 1; f.mood = .startled; if at(0.6) { f.say = "แข็ง…" } }
+            else if t < 4.6 { f.ice = 1 - (t - 4.0) / 0.6; f.mood = .cold; if at(4.0) { f.burst = true } }
+            else { f.mood = .cold; if at(4.6) { f.say = "brr" } }
+        case .flood:
+            // A glass tips in from above, the water rises over its head, it sinks, swims up, and pants on dry ground.
+            f.glass = t < 0.6 ? t / 0.6 : t < 8.0 ? 1 : max(0, 1 - (t - 8.0) / 0.6)
+            f.pour = t >= 0.6 && t < 3.0
+            f.water = t < 0.6 ? 0 : t < 3.0 ? (t - 0.6) / 2.4 * 2.4 : t < 7.5 ? 2.4 : t < 9.5 ? 2.4 * (1 - (t - 7.5) / 2.0) : 0
+            f.bubbles = t >= 2.4 && t < 7.5
+            if t < 0.6 { f.mood = .curious; if at(0.05) { f.say = "…?" } }
+            else if t < 1.5 { f.mood = .startled; if at(0.6) { f.say = "!!" } }
+            else if t < 5.0 { f.mood = .worried; if at(3.0) { f.say = "จม…" } }
+            else if t < 7.5 { let q = (t - 5.0) / 2.5; f.lift = 1.6 * q * q * (3 - 2 * q); f.spinDeg = sin(t * 6) * 10; f.mood = q < 0.6 ? .worried : .happy; if at(5.2) { f.say = "ว่าย ว่าย" } }
+            else if t < 9.5 { f.lift = max(0, f.water - 0.8); f.mood = .happy }
+            else { f.mood = .pant; if at(9.5) { f.say = "ฮึบ… ฮึบ…" }; if at(11.2) { f.say = "รอด…" } }
+        case .plane:
+            // Hops onto a passing plane, climbs through the clouds, then jumps and drops all the way down.
+            if t < 1.0 { f.plane = Offset(x: -6 + 6 * t, y: 0.6); f.mood = .curious; if at(0.1) { f.say = "เครื่องบิน!" } }
+            else if t < 1.4 { f.plane = Offset(x: 0, y: 0.6); f.mood = .happy; if at(1.0) { f.hopNow = 300; f.say = "โดด!" } }
+            else if t < 6.0 {
+                let q = min(1, (t - 1.4) / 2.6), climb = 3.2 * q * q * (3 - 2 * q)
+                f.lift = 0.9 + climb; f.plane = Offset(x: 0, y: 0.9); f.driveVx = 0.5; f.clouds = t > 2.5
+                f.mood = t < 3.0 ? .happy : .wow; if at(3.0) { f.say = "เมฆ!" }
+            }
+            else if t < 8.0 { f.plane = Offset(x: (t - 6.0) * 5, y: 4.1); f.mood = .startled; if at(6.0) { f.hopNow = 140; f.say = "ว้ากกก!" } }
+            else if t < 9.5 { f.mood = .dizzy; if at(8.0) { f.say = "@_@" } }
+            else { f.mood = .happy; if at(9.5) { f.say = "สนุก!" } }
+        case .dance:
+            f.disco = true; f.notes = true; f.mood = .groove
+            f.driveVx = sin(t * 3.1) * 1.5
+            for k in stride(from: 0.5, to: 7.6, by: 0.5) where at(k) { f.hopNow = 90 }
+            if t >= 4.0 && t < 4.6 { f.spinDeg = 360 * (t - 4.0) / 0.6 }
+            if at(0.2) { f.say = "♪♪" }; if at(3.0) { f.say = "เต้น~" }; if at(6.0) { f.say = "♪" }
+        case .ninja:
+            // Throws a smoke bomb at its feet, vanishes in the cloud, and later steps back in through a door.
+            if t < 0.5 { f.scale = 1 - t * 0.16; f.mood = .curious; if at(0.05) { f.say = "…" } }
+            else if t < 0.8 { f.bomb = (t - 0.5) / 0.3; f.mood = .happy }
+            else if t < 2.8 { let q = (t - 0.8) / 2.0; f.smokeCloud = q < 0.25 ? q / 0.25 : max(0, 1 - (q - 0.25) / 0.75); f.hidden = t >= 0.9; if at(0.8) { f.say = "หายตัว!"; f.pop = true } }
+            else if t < 3.6 { f.hidden = true }
+            else if t < 4.2 { f.hidden = true; f.door = (t - 3.6) / 0.6 }
+            else if t < 4.8 { f.hidden = true; f.door = 1; f.doorOpen = (t - 4.2) / 0.6 }
+            else if t < 5.6 { f.door = 1; f.doorOpen = 1; f.mood = .back; if at(4.8) { f.hopNow = 200; f.say = "ทาดา~" } }
+            else if t < 6.4 { f.door = 1; f.doorOpen = 1 - (t - 5.6) / 0.8; f.mood = .happy }
+            else { f.door = max(0, 1 - (t - 6.4) / 0.6); f.mood = .happy }
+        case .trip:
+            if t < 0.9 { f.driveVx = 3.2; f.mood = .happy }
+            else if t < 1.5 { f.spinDeg = 360 * (t - 0.9) / 0.6; f.mood = .startled; if at(0.9) { f.hopNow = 220; f.say = "อุ๊ย!" } }
+            else if t < 2.6 { f.mood = .dizzy }
+            else { f.mood = .normal }
+        case .dash:
+            if t < 0.5 { f.mood = .curious; f.stretch = -0.2 * (t / 0.5); if at(0.05) { f.say = "บี๊บ บี๊บ!" } }
+            else if t < 0.8 { f.dashX = (t - 0.5) / 0.3 * 8; f.dust = true; f.mood = .happy }
+            else if t < 2.4 { f.hidden = true }
+            else if t < 2.9 { f.dashX = -8 + (t - 2.4) / 0.5 * 8; f.dust = true; f.mood = .happy }
+            else { f.mood = .happy; if at(2.9) { f.say = "ทัน!" } }
+        }
+        f.done = t >= sceneDuration(s)
+        return f
+    }
+    /// Which bubbles are allowed. Quiet mode keeps only what marks a real change of state.
+    enum BubbleKind { case mood, notice, playfulness, language, listening, thinking, done, scene, care }
+    static func allowsBubble(_ kind: BubbleKind, quiet: Bool) -> Bool {
+        guard quiet else { return true }
+        switch kind { case .playfulness, .language, .listening, .thinking, .done: return true; case .mood, .notice, .scene, .care: return false }
+    }
+}
+extension Critter.Scheduler {
+    static let sceneGap: [(Double, Double)] = [(480, 900), (90, 180), (40, 90)]   // quiet / normal / playful — the user found 5–10 min "almost never"
+    static let sceneWeights: [(Critter.Scene, Double)] = [(.inflate, 3), (.lightning, 3), (.rainUmbrella, 4), (.rain, 3), (.balloon, 4), (.manhole, 4), (.sneeze, 8), (.hiccup, 8),
+                                                            (.spinJump, 6), (.levitate, 3), (.ghost, 3), (.shootingStar, 3), (.box, 3), (.melt, 2), (.freeze, 2), (.trip, 5), (.flood, 2), (.plane, 2), (.dance, 4), (.ninja, 3)]
+    static let cartoonWeights: [(Critter.Scene, Double)] = [(.eyePop, 8), (.tornado, 5), (.pancake, 5), (.rubber, 6), (.dash, 6)]
+    func nextSceneDelay(_ roll: Double) -> Double { let g = Critter.Scheduler.sceneGap[max(0, min(2, playfulness))]; return (g.0 + (g.1 - g.0) * roll) * (cartoon ? 0.6 : 1) }
+    func pickScene(_ roll: Double) -> Critter.Scene { Critter.Scheduler.weighted(cartoon ? Critter.Scheduler.sceneWeights + Critter.Scheduler.cartoonWeights : Critter.Scheduler.sceneWeights, roll) }
+    // Weather: a background state that lasts minutes; clear is the common case.
+    static let weatherWeights: [(Critter.Weather, Double)] = [(.clear, 40), (.sunny, 14), (.rain, 12), (.wind, 10), (.snow, 8), (.heat, 8)]
+    static let weatherLength: (Double, Double) = (180, 480)
+    static let weatherGap: (Double, Double) = (600, 1500)
+    func pickWeather(_ roll: Double) -> Critter.Weather { Critter.Scheduler.weighted(Critter.Scheduler.weatherWeights, roll) }
+    static let sunLength: (Double, Double) = (45, 90)   // the sun is a corner ornament; the user found 3–8 min of it too long
+    func weatherLength(_ roll: Double, kind: Critter.Weather = .rain) -> Double {
+        let g = kind == .sunny || kind == .heat ? Critter.Scheduler.sunLength : Critter.Scheduler.weatherLength
+        return g.0 + (g.1 - g.0) * roll
+    }
+    func nextWeatherDelay(_ roll: Double) -> Double { Critter.Scheduler.weatherGap.0 + (Critter.Scheduler.weatherGap.1 - Critter.Scheduler.weatherGap.0) * roll }
+}
+
+
+// MARK: - Weather and care (Tamagotchi-style bond). Pure rules; the engine keeps time.
+extension Critter {
+    enum Weather: String, CaseIterable, Codable { case clear, sunny, rain, wind, snow, heat }
+    struct Sky: Equatable {
+        var kind: Weather = .clear
+        var umbrella = false     // rain only: did it bring one this time
+        var night = false        // by the clock, independent of the weather roll
+        var age = 0.0            // seconds since this weather began (snow piles up with it)
+    }
+    static func isNight(hour: Int) -> Bool { hour >= 20 || hour < 6 }
+    /// How the body feels about the weather; nil when there is nothing to react to.
+    static func weatherMood(_ sky: Sky) -> Mood? {
+        switch sky.kind {
+        case .clear: return nil
+        case .sunny: return .happy
+        case .rain: return sky.umbrella ? nil : .cold
+        case .wind: return .worried
+        case .snow: return .cold
+        case .heat: return .hot
+        }
+    }
+    static let weatherNames: [Weather: String] = [.clear: "ฟ้าโปร่ง", .sunny: "แดดออก", .rain: "ฝนตก", .wind: "ลมพัด", .snow: "หิมะตก", .heat: "หน้าร้อน"]
+
+    enum Care {
+        enum Food: String, CaseIterable, Codable {
+            case rice, ramen, cookie, icecream, fish, apple
+            var emoji: String { switch self { case .rice: return "🍙"; case .ramen: return "🍜"; case .cookie: return "🍪"; case .icecream: return "🍦"; case .fish: return "🐟"; case .apple: return "🍎" } }
+            var name: String { switch self { case .rice: return "ข้าวปั้น"; case .ramen: return "ราเมง"; case .cookie: return "คุกกี้"; case .icecream: return "ไอศกรีม"; case .fish: return "ปลา"; case .apple: return "แอปเปิล" } }
+            var fill: Double { switch self { case .ramen: return 38; case .rice: return 30; case .fish: return 28; case .apple: return 18; case .cookie: return 14; case .icecream: return 12 } }
+            var fun: Double { switch self { case .icecream, .cookie: return 8; default: return 2 } }
+        }
+        enum Action: Equatable { case stroke, tease, feed(Food), read, play, dictation, visit }
+        struct State: Codable, Equatable {
+            var bond = 0.0, fullness = 70.0, fun = 60.0, energy = 80.0, knowledge = 0.0
+            var streakDays = 0, lastVisitDay = -1
+            var lastFedAt = -1e9, lastStrokedAt = -1e9, lastReadAt = -1e9, lastPlayedAt = -1e9, lastTickAt = -1.0
+            var recentTeases: [Double] = []
+            var strokeHeat = 0.0
+            var totalFeeds = 0, totalReads = 0, totalStrokes = 0, totalPlays = 0, totalDictations = 0
+            var dictationBondToday = 0.0, dictationDay = -1
+        }
+        struct Outcome: Equatable {
+            var accepted = true
+            var mood: Mood? = nil
+            var scene: Scene? = nil
+            var move: Move? = nil
+            var say: String? = nil
+            var bondGained = 0.0
+        }
+        static let levelFloors: [Double] = [0, 15, 35, 60, 85]
+        static let titles = ["คนแปลกหน้า", "คุ้นเคย", "เพื่อน", "เพื่อนซี้", "ครอบครัว"]
+        static func level(_ bond: Double) -> Int { levelFloors.lastIndex { bond >= $0 } ?? 0 }
+        static func title(_ bond: Double) -> String { titles[level(bond)] }
+        static func day(_ now: Double) -> Int { Int(floor((now + 7 * 3600) / 86400)) }   // Bangkok day boundary
+        static func clamp(_ v: Double) -> Double { max(0, min(100, v)) }
+        /// Bond grows slower the closer you already are; never past 100.
+        static func gain(_ s: inout State, _ amount: Double) -> Double { let g = amount * (1 - s.bond / 130); s.bond = clamp(s.bond + g); return g }
+
+        static func apply(_ a: Action, to s: inout State, now: Double) -> Outcome {
+            var o = Outcome()
+            switch a {
+            case .stroke:
+                s.totalStrokes += 1; s.fun = clamp(s.fun + 2)
+                if now - s.lastStrokedAt > 15 { o.bondGained = gain(&s, 0.6); s.lastStrokedAt = now }
+                s.strokeHeat = min(1.2, s.strokeHeat + 0.18)
+                if s.strokeHeat >= 1 { s.strokeHeat = 0; o.scene = .heartEyes } else { o.mood = s.strokeHeat > 0.5 ? .loved : .shy }
+            case .tease:
+                s.recentTeases = s.recentTeases.filter { now - $0 < 20 } + [now]
+                s.fun = clamp(s.fun + 3)
+                if s.recentTeases.count > 4 { o.mood = .annoyed; o.say = "พอได้แล้ว!"; s.bond = clamp(s.bond - 0.3); o.accepted = false }
+                else { o.bondGained = gain(&s, 0.4); o.mood = .laugh; o.say = ["ฮ่าฮ่า!", "จั๊กจี้!", "เอาอีก!"][s.recentTeases.count % 3] }
+            case .feed(let food):
+                if s.fullness > 92 { o.accepted = false; o.mood = .full; o.say = "อิ่มแล้ว…"; return o }
+                s.totalFeeds += 1; s.fullness = clamp(s.fullness + food.fill); s.fun = clamp(s.fun + food.fun)
+                if now - s.lastFedAt > 300 { o.bondGained = gain(&s, 1.5) }
+                s.lastFedAt = now; o.scene = .eat
+            case .read:
+                s.totalReads += 1; s.knowledge = clamp(s.knowledge + 5); s.energy = clamp(s.energy - 5)
+                if now - s.lastReadAt > 600 { o.bondGained = gain(&s, 1.2) }
+                s.lastReadAt = now; o.scene = .read
+            case .play:
+                if s.energy < 12 { o.accepted = false; o.mood = .sleepy; o.say = "ง่วง… ขอพักก่อน"; return o }
+                s.totalPlays += 1; s.fun = clamp(s.fun + 10); s.energy = clamp(s.energy - 8)
+                if now - s.lastPlayedAt > 120 { o.bondGained = gain(&s, 1.0) }
+                s.lastPlayedAt = now; o.move = [.pinball, .zigzag, .dribble, .wallClimb][s.totalPlays % 4]; o.mood = .happy; o.say = "เย้!"
+            case .dictation:
+                s.totalDictations += 1; s.fun = clamp(s.fun + 1)
+                let d = day(now); if d != s.dictationDay { s.dictationDay = d; s.dictationBondToday = 0 }
+                if s.dictationBondToday < 6 { o.bondGained = gain(&s, 0.3); s.dictationBondToday += 0.3 }
+            case .visit:
+                let d = day(now)
+                if d != s.lastVisitDay {
+                    let gap = s.lastVisitDay < 0 ? 0 : d - s.lastVisitDay
+                    s.streakDays = gap == 1 ? s.streakDays + 1 : 1
+                    if gap >= 3 && s.bond > 15 { o.mood = .sulky; o.say = "หายไปไหนมา…" } else if s.lastVisitDay >= 0 { o.mood = .happy; o.say = "มาแล้ว!" }
+                    o.bondGained = gain(&s, 0.5); s.lastVisitDay = d
+                }
+            }
+            return o
+        }
+        /// Time passing while the app runs or is closed. Hours in, hunger out. Nothing dies.
+        static func decay(_ s: inout State, hours: Double) {
+            let h = max(0, min(48, hours))
+            s.fullness = clamp(s.fullness - 5 * h); s.fun = clamp(s.fun - 4 * h); s.energy = clamp(s.energy - 2 * h)
+            if s.fullness < 20 || s.fun < 15 { s.bond = clamp(s.bond - 0.15 * h) }
+            s.strokeHeat = max(0, s.strokeHeat - 0.5 * h)
+        }
+        static func rest(_ s: inout State, hours: Double) { s.energy = clamp(s.energy + 12 * max(0, hours)) }
+        /// The one need that shows on the face right now, if any.
+        static func need(_ s: State) -> Mood? {
+            if s.fullness < 25 { return .hungry }
+            if s.energy < 18 { return .sleepy }
+            if s.fun < 20 && s.bond > 15 { return .sulky }
+            return nil
+        }
     }
 }

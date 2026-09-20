@@ -225,7 +225,21 @@ final class Model: ObservableObject {
     @Published var overlayStyle = UserDefaults.standard.string(forKey: "overlayStyle") ?? "character" { didSet { UserDefaults.standard.set(overlayStyle, forKey: "overlayStyle") } }
     @Published var critterPlayfulness = UserDefaults.standard.object(forKey: "critterPlayfulness") as? Int ?? 1 { didSet { UserDefaults.standard.set(critterPlayfulness, forKey: "critterPlayfulness") } }
     @Published var critterReduceMotion = UserDefaults.standard.bool(forKey: "critterReduceMotion") { didSet { UserDefaults.standard.set(critterReduceMotion, forKey: "critterReduceMotion") } }
+    @Published var critterSpeech = UserDefaults.standard.object(forKey: "critterSpeech") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(critterSpeech, forKey: "critterSpeech"); if oldValue != critterSpeech { critterCues.send(.mode(critterSpeech ? "พูดได้แล้ว" : "โหมดเงียบ")) } }
+    }
     let critterCues = PassthroughSubject<CritterCue, Never>()
+    @Published var critterCartoon = UserDefaults.standard.bool(forKey: "critterCartoon") { didSet { UserDefaults.standard.set(critterCartoon, forKey: "critterCartoon"); if oldValue != critterCartoon { critterCues.send(.mode(critterCartoon ? "โหมดการ์ตูน!" : "โหมดปกติ")) } } }
+    @Published var critterWeather = UserDefaults.standard.object(forKey: "critterWeather") as? Bool ?? true { didSet { UserDefaults.standard.set(critterWeather, forKey: "critterWeather") } }
+    @Published var critterEyeTracking = UserDefaults.standard.object(forKey: "critterEyeTracking") as? Bool ?? true { didSet { UserDefaults.standard.set(critterEyeTracking, forKey: "critterEyeTracking") } }
+    @Published var critterEyeStyle = UserDefaults.standard.string(forKey: "critterEyeStyle") ?? "pixel" { didSet { UserDefaults.standard.set(critterEyeStyle, forKey: "critterEyeStyle") } }
+    /// The bond with the character. Persisted as JSON; the engine owns the live copy and reports every change.
+    @Published var care: Critter.Care.State = (UserDefaults.standard.data(forKey: "critterCare")).flatMap { try? JSONDecoder().decode(Critter.Care.State.self, from: $0) } ?? Critter.Care.State() {
+        didSet { if let d = try? JSONEncoder().encode(care) { UserDefaults.standard.set(d, forKey: "critterCare") } }
+    }
+    @Published var skyNow = "ฟ้าโปร่ง"
+    var careAction: ((Critter.Care.Action) -> Void)?
+    var weatherAction: ((Critter.Weather?) -> Void)?
     var tapLevel = "-"
     @Published var slangMode: Slang.Mode = Slang.Mode(rawValue: UserDefaults.standard.string(forKey: "slangMode") ?? "") ?? .polite { didSet { UserDefaults.standard.set(slangMode.rawValue, forKey: "slangMode") } }
     @Published var slangNotes = UserDefaults.standard.object(forKey: "slangNotes") as? Bool ?? true { didSet { UserDefaults.standard.set(slangNotes, forKey: "slangNotes") } }
@@ -422,7 +436,7 @@ final class Model: ObservableObject {
     }
     func showNotice(_ message: String) {
         hideNoticeWork?.cancel(); notice = message; overlayVisible = true
-        if overlayStyle == "character" && !message.hasPrefix("เลือก TH") && !message.hasPrefix("เปลี่ยนภาษา") { critterCues.send(.notice(message)) }
+        if overlayStyle == "character" && !message.hasPrefix("เลือก TH") && !message.hasPrefix("เปลี่ยนภาษา") && !message.hasPrefix("ความขี้เล่น") { critterCues.send(.notice(message)) }
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.notice = nil
@@ -895,7 +909,7 @@ struct Settings: View {
         self.model = model
         _section = State(initialValue: section)
     }
-    private let sections = [("การพิมพ์ด้วยเสียง", "waveform"), ("ยังไม่ได้พิมพ์", "tray"), ("ตรวจระบบ", "slider.horizontal.3"), ("โปรไฟล์ของฉัน", "person.crop.circle")]
+    private let sections = [("การพิมพ์ด้วยเสียง", "waveform"), ("ยังไม่ได้พิมพ์", "tray"), ("ตรวจระบบ", "slider.horizontal.3"), ("โปรไฟล์ของฉัน", "person.crop.circle"), ("เพื่อน gluu bot", "heart")]
     // Every free-text box uses the dictation vocabulary field's look, plus a
     // placeholder so an empty box still says what belongs in it.
     @ViewBuilder func editor(_ text: Binding<String>, placeholder: String, height: CGFloat, onFileDrop: ((URL) -> Void)? = nil) -> some View {
@@ -966,7 +980,7 @@ struct Settings: View {
                 VStack(alignment: .leading, spacing: 18) {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(sections[section].0).font(.system(size: 25, weight: .semibold))
-                        Text(section == 0 ? "พูดอย่างเป็นธรรมชาติ ให้ gluu bot ช่วยพิมพ์" : section == 1 ? "ข้อความที่ยังไม่ได้พิมพ์ลงช่อง เก็บไว้ให้คัดลอก" : section == 3 ? "คำศัพท์และตัวอย่างเสียงสำหรับการใช้งานของคุณ" : "ตรวจความพร้อมของไมโครโฟนและการพิมพ์")
+                        Text(section == 0 ? "พูดอย่างเป็นธรรมชาติ ให้ gluu bot ช่วยพิมพ์" : section == 1 ? "ข้อความที่ยังไม่ได้พิมพ์ลงช่อง เก็บไว้ให้คัดลอก" : section == 3 ? "คำศัพท์และตัวอย่างเสียงสำหรับการใช้งานของคุณ" : section == 4 ? "ลูบ เล่น ให้อาหาร อ่านหนังสือ — ความสนิทค่อย ๆ โต ไม่มีวันตาย" : "ตรวจความพร้อมของไมโครโฟนและการพิมพ์")
                             .font(.system(size: 12)).foregroundStyle(.secondary)
                     }.padding(.bottom, 6)
                     if section == 0 {
@@ -1006,7 +1020,11 @@ struct Settings: View {
                                     Text("เงียบ").tag(0); Text("ปกติ").tag(1); Text("ขี้เล่น").tag(2)
                                 }.pickerStyle(.segmented).frame(maxWidth: 260)
                                 Toggle("ลดการเคลื่อนไหว (หยุดกลิ้ง/เด้ง เหลือแค่ตามอง)", isOn: $model.critterReduceMotion).toggleStyle(.switch).controlSize(.small)
-                                Button("เปิดหน้าต่างดูท่าทางและอารมณ์") { model.playgroundAction?() }.controlSize(.small)
+                                Toggle("คำพูดของ gluu bot (ปิด = แค่ท่าทาง ขึ้นข้อความเฉพาะตอนสลับภาษา เปลี่ยนโหมด และตอนกด Fn ฟัง/คิด)", isOn: $model.critterSpeech).toggleStyle(.switch).controlSize(.small)
+                                Toggle("ตาหันตามเมาส์ทั่วทั้งจอ (ปิด = กวาดตามองเอง)", isOn: $model.critterEyeTracking).toggleStyle(.switch).controlSize(.small)
+                                Picker("ดวงตา", selection: $model.critterEyeStyle) {
+                                    Text("LED พิกเซลสีฟ้า (แบบ Astro)").tag("pixel"); Text("ขาวเรียบแบบเดิม").tag("classic")
+                                }.pickerStyle(.segmented).frame(maxWidth: 360)
                 Text("คลิกที่ตัวละครเพื่อเปิดหน้านี้ · Fn + Option วนโหมดความขี้เล่น · ตั้งค่า \"ลดการเคลื่อนไหว\" ของ macOS มีผลด้วยเสมอ").font(.caption2).foregroundStyle(.secondary)
                             }
                         }
@@ -1110,6 +1128,37 @@ struct Settings: View {
                                     Spacer()
                                     Button("ลบ", systemImage: "trash") { model.pending.remove(at: index) }.foregroundStyle(.secondary)
                                 }.controlSize(.small)
+                            }
+                        }
+                    } else if section == 4 {
+                        let c = model.care, lv = Critter.Care.level(c.bond)
+                        card("ความสัมพันธ์") {
+                            HStack(alignment: .firstTextBaseline) {
+                                Text(Critter.Care.title(c.bond)).font(.system(size: 22, weight: .semibold, design: .rounded))
+                                Text("เลเวล \(lv + 1)/5").font(.caption).foregroundStyle(.secondary)
+                                Spacer()
+                                Text(c.streakDays > 1 ? "มาเจอกัน \(c.streakDays) วันติด" : "").font(.caption).foregroundStyle(.secondary)
+                            }
+                            ProgressView(value: c.bond, total: 100).tint(.pink)
+                            Text(lv < 4 ? "ความสนิท \(Int(c.bond)) · อีก \(Int(ceil(Critter.Care.levelFloors[lv + 1] - c.bond))) ถึง \"\(Critter.Care.titles[lv + 1])\"" : "ความสนิท \(Int(c.bond)) · สนิทที่สุดแล้ว").font(.caption).foregroundStyle(.secondary)
+                            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 8) {
+                                ForEach([("อิ่ม", c.fullness, Color.orange), ("สนุก", c.fun, Color.yellow), ("พลัง", c.energy, Color.green), ("ความรู้", c.knowledge, Color.blue)], id: \.0) { g in
+                                    GridRow { Text(g.0).font(.caption).frame(width: 48, alignment: .leading); ProgressView(value: g.1, total: 100).tint(g.2).frame(width: 200); Text("\(Int(g.1))").font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
+                                }
+                            }
+                            Text("อิ่ม/สนุก/พลัง ลดลงตามเวลาแม้ปิดแอป · หิวหรือเบื่อนาน ๆ ความสนิทจะค่อย ๆ ลด แต่ไม่มีวันตายและไม่หายไป").font(.caption2).foregroundStyle(.secondary)
+                        }
+                        card("ดูแล gluu bot") {
+                            CritterPreviewCard(model: model, showsCare: true)
+                            Text("ที่ตัวละครมุมจอ: ลากเมาส์บนตัว = ลูบ · ดับเบิลคลิก = เล่นหัว · คลิกขวา = เมนูให้อาหาร/อ่าน/เล่น · เล่นหัวถี่เกิน 4 ครั้งใน 20 วิ จะโดนงอน").font(.caption).foregroundStyle(.secondary)
+                            Text("การพิมพ์ด้วยเสียงทุกครั้งนับเป็นการใช้เวลาด้วยกัน (+ความสนิทเล็กน้อย สูงสุดวันละ 6) · ให้อาหาร \(c.totalFeeds) · อ่าน \(c.totalReads) · เล่น \(c.totalPlays) · ลูบ \(c.totalStrokes) · พิมพ์ด้วยกัน \(c.totalDictations) ครั้ง").font(.caption2).foregroundStyle(.secondary)
+                        }
+                        card("อารมณ์ขันและอากาศ") {
+                            Toggle("โหมดการ์ตูน (ตาถลน ลิ้นห้อย หมุนติ้ว โดนทั่งทับ ตัวยางยืด วิ่งหายวูบ — สุ่มถี่ขึ้น 40%)", isOn: $model.critterCartoon).toggleStyle(.switch).controlSize(.small)
+                            Toggle("สภาพอากาศสุ่ม (แดดออก ฝนตก ลมพัด หิมะตก หน้าร้อน · ครั้งละ 3–8 นาที ห่างกัน 10–25 นาที · กลางคืนมีพระจันทร์)", isOn: $model.critterWeather).toggleStyle(.switch).controlSize(.small)
+                            HStack(spacing: 8) {
+                                Text("ตอนนี้: " + model.skyNow).font(.caption)
+                                Menu("ลองอากาศ") { ForEach(Critter.Weather.allCases, id: \.self) { w in Button(Critter.weatherNames[w] ?? w.rawValue) { model.weatherAction?(w == .clear ? nil : w) } } }.controlSize(.small).fixedSize()
                             }
                         }
                     } else if section == 3 {
@@ -1319,6 +1368,18 @@ final class Delegate: NSObject, NSApplicationDelegate {
                 model.critterCues.receive(on: RunLoop.main).sink { [weak engine] c in engine?.cue(c) }.store(in: &critterBag)
                 model.$critterPlayfulness.receive(on: RunLoop.main).sink { [weak engine] v in engine?.scheduler.playfulness = v }.store(in: &critterBag)
                 model.$critterReduceMotion.receive(on: RunLoop.main).sink { [weak engine] v in engine?.reduceMotion = v || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }.store(in: &critterBag)
+                model.$critterSpeech.receive(on: RunLoop.main).sink { [weak engine] v in engine?.quiet = !v }.store(in: &critterBag)
+                model.$critterCartoon.receive(on: RunLoop.main).sink { [weak engine] v in engine?.scheduler.cartoon = v }.store(in: &critterBag)
+                model.$critterWeather.receive(on: RunLoop.main).sink { [weak engine] v in engine?.weatherEnabled = v }.store(in: &critterBag)
+                model.$critterEyeTracking.receive(on: RunLoop.main).sink { [weak engine] v in engine?.eyeTracking = v }.store(in: &critterBag)
+                model.$critterEyeStyle.receive(on: RunLoop.main).sink { [weak engine] v in engine?.pixelEyes = v == "pixel" }.store(in: &critterBag)
+                // The corner character owns the bond; settings buttons act on it, and every change is saved.
+                engine.care = model.care
+                engine.careChanged = { [weak self] st in self?.model.care = st }
+                engine.skyChanged = { [weak self] sky in self?.model.skyNow = (Critter.weatherNames[sky.kind] ?? "") + (sky.kind == .rain ? (sky.umbrella ? " (มีร่ม)" : " (ไม่มีร่ม)") : "") + (sky.night ? " · กลางคืน" : "") }
+                model.careAction = { [weak engine] a in engine?.act(a) }
+                model.weatherAction = { [weak engine] w in engine?.setWeather(w) }
+                engine.act(.visit)
                 critter = p
             }
             critter?.place(); critter?.orderFrontRegardless(); critter?.engine.start()
@@ -1397,7 +1458,8 @@ final class Delegate: NSObject, NSApplicationDelegate {
                 self.model.fnDown = false
                 if self.model.phase != .idle && self.model.phase != .processing { self.model.cancel() }
                 self.model.critterPlayfulness = (self.model.critterPlayfulness + 1) % 3
-                self.model.showNotice("ความขี้เล่น: " + ["เงียบ", "ปกติ", "ขี้เล่น"][self.model.critterPlayfulness])
+                let label = "ความขี้เล่น: " + ["เงียบ", "ปกติ", "ขี้เล่น"][self.model.critterPlayfulness]
+                self.model.showNotice(label); self.model.critterCues.send(.mode(self.model.critterPlayfulness == 2 ? "ฮะโหน่ง...มาแล้วว" : label))
             }
         }
     }
@@ -1518,6 +1580,9 @@ final class Delegate: NSObject, NSApplicationDelegate {
             engine.scheduler.playfulness = model.critterPlayfulness
             engine.reduceMotion = model.critterReduceMotion || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
             model.$critterPlayfulness.receive(on: RunLoop.main).sink { [weak engine] v in engine?.scheduler.playfulness = v }.store(in: &critterBag)
+            model.$critterSpeech.receive(on: RunLoop.main).sink { [weak engine] v in engine?.quiet = !v }.store(in: &critterBag)
+            model.$critterEyeStyle.receive(on: RunLoop.main).sink { [weak engine] v in engine?.pixelEyes = v == "pixel" }.store(in: &critterBag)
+            engine.pixelEyes = model.critterEyeStyle == "pixel"
             let view = CritterPlayground(engine: engine, model: model)
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 720), styleMask: [.titled, .closable], backing: .buffered, defer: false)
             w.title = "ดูท่าทางและอารมณ์"; w.isReleasedWhenClosed = false; w.contentView = NSHostingView(rootView: view); w.center()

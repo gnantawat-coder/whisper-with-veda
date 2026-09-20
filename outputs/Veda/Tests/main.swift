@@ -333,3 +333,116 @@ do {
     check(Critter.Scheduler(playfulness: 9).nextMoveDelay(0) == 1.8, "out-of-range playfulness clamps")
 }
 print("Critter checks passed; total \(checks)")
+
+// Scenes are fixed timelines; the moments that matter must land where the design says.
+do {
+    let inflate = { (t: Double) in Critter.sceneFrame(.inflate, t: t) }
+    check(inflate(0.0).scale == 1 && inflate(2.5).scale > 2.1, "the body inflates past double size before it bursts")
+    check(inflate(2.6).burst && inflate(3.0).hidden && !inflate(2.7).burst, "it bursts once, then is gone for a second")
+    check(inflate(3.7).scale < 0.5 && inflate(3.7).pacifier > 0.99 && inflate(7.1).scale > 0.99 && inflate(7.1).pacifier == 0, "it is reborn small with a pacifier and grows back to full size")
+    check(inflate(7.2).done && !inflate(7.1).done, "the scene ends exactly at its duration")
+    let strike = Critter.sceneFrame(.lightning, t: 0.6 + 1.0 / 120)
+    check(strike.bolt == 1 && strike.charred == 1 && Critter.sceneFrame(.lightning, t: 2.0).smoke > 0 && Critter.sceneFrame(.lightning, t: 4.1).charred < 0.2, "lightning flashes, chars the body, smokes, then heals")
+    check(Critter.sceneFrame(.rainUmbrella, t: 3).umbrella && Critter.sceneFrame(.rainUmbrella, t: 3).rain && !Critter.sceneFrame(.rain, t: 3).umbrella && Critter.sceneFrame(.rain, t: 3).mood == .cold, "rain with an umbrella stays dry; without it the body is cold")
+    check(Critter.sceneFrame(.rainUmbrella, t: 3).driveVx == nil && Critter.sceneFrame(.rain, t: 1.6).driveVx != nil && Critter.sceneFrame(.rain, t: 1.6).driveVx! > 0 && Critter.sceneFrame(.rain, t: 3.6).driveVx! < 0, "without an umbrella it rolls right, then left")
+    let up = Critter.sceneFrame(.balloon, t: 5.0), fall = Critter.sceneFrame(.balloon, t: 5.4 + 1.0 / 120)
+    check((up.lift ?? 0) > 3 && up.balloon == 1 && fall.pop && fall.lift == nil && fall.balloon == 0, "the balloon lifts the body up, then pops and lets it fall")
+    check(Critter.sceneFrame(.sneeze, t: 0.8 + 1.0 / 120).droplets && Critter.sceneFrame(.sneeze, t: 0.4).scale > 1.03 && Critter.sceneFrame(.sneeze, t: 1.5).snot == 1 && Critter.sceneFrame(.sneeze, t: 0.5).snot == 0, "a sneeze builds up, bursts, then the nose runs")
+    let m = { (t: Double) in Critter.sceneFrame(.manhole, t: t) }
+    check(m(0.7).manhole == 1 && m(1.0).sink > 0 && m(1.0).sink < 1 && !m(1.0).hidden, "the cover opens and the body drops in")
+    check(m(3.0).hidden && m(3.0).manhole == 0 && m(3.0).manholeShown, "the cover is closed and the body gone while underground")
+    check(m(6.3).sink < 1 && !m(6.3).hidden && m(7.5).manhole < 0.2 && m(7.5).sink == 0, "it pops back up and the cover closes again")
+    check([0.2, 0.9, 1.6].allSatisfy { Critter.sceneFrame(.hiccup, t: $0 + 1.0 / 120).pop }, "hiccups come in three")
+    check(Critter.Scene.allCases.allSatisfy { Critter.sceneDuration($0) > 1 }, "every scene has a duration")
+    check(Critter.allowsBubble(.language, quiet: true) && Critter.allowsBubble(.thinking, quiet: true) && !Critter.allowsBubble(.mood, quiet: true) && !Critter.allowsBubble(.scene, quiet: true) && Critter.allowsBubble(.mood, quiet: false), "quiet mode keeps only state-change bubbles")
+    let sch = Critter.Scheduler(playfulness: 1)
+    check(sch.nextSceneDelay(0) == 90 && Critter.Scheduler(playfulness: 0).nextSceneDelay(1) == 900 && Critter.Scheduler(playfulness: 2).nextSceneDelay(0) == 40, "scenes are 1.5–3 min apart normally, rarer when quiet, under 1.5 min when playful")
+    check(sch.pickScene(0) == .inflate && sch.pickScene(0.999) == .ninja, "scene picks span the table")
+    check(sch.weatherLength(1, kind: .sunny) == 90 && sch.weatherLength(1, kind: .heat) == 90 && sch.weatherLength(1, kind: .rain) == 480, "sun and heat are short; rain keeps the long range")
+    let nj = { (t: Double) in Critter.sceneFrame(.ninja, t: t) }
+    check(nj(0.65).bomb > 0.4 && nj(0.65).bomb < 0.6 && !nj(0.65).hidden, "the bomb is mid-fall before the cloud")
+    check(nj(1.3).smokeCloud == 1 && nj(1.3).hidden && nj(3.0).hidden && nj(3.0).smokeCloud == 0, "the cloud bursts and it is gone after the smoke clears")
+    check(nj(4.5).door == 1 && abs(nj(4.5).doorOpen - 0.5) < 0.01 && nj(4.5).hidden && !nj(5.0).hidden && nj(4.8 + 1.0 / 120).hopNow != nil && nj(7.1).door < 0.1, "the door appears, opens, it hops out, and the door goes away")
+}
+print("Scene checks passed; total \(checks)")
+
+// Cartoon gags, weather, and the care rules.
+do {
+    let pop = Critter.sceneFrame(.eyePop, t: 1.0)
+    check(pop.eyeOut == 1 && pop.speedLines == 1 && pop.mood == .startled && Critter.sceneFrame(.eyePop, t: 2.5).eyeOut < 0.1, "eyeballs fly out with speed lines and snap back")
+    check(Critter.sceneFrame(.spinJump, t: 0.9).spinDeg > 170 && Critter.sceneFrame(.spinJump, t: 0.9).spinDeg < 190 && Critter.sceneFrame(.spinJump, t: 0.3 + 1.0 / 120).hopNow != nil, "the spin jump hops once and turns a full circle")
+    check((Critter.sceneFrame(.levitate, t: 3.0).lift ?? 0) > 1.4 && Critter.sceneFrame(.levitate, t: 3.0).aura && Critter.sceneFrame(.levitate, t: 3.0).mood == .zen && Critter.sceneFrame(.levitate, t: 5.8).lift == nil, "levitation lifts with an aura and eyes closed, then lands")
+    check(Critter.sceneFrame(.ghost, t: 1.5).ghost == 1 && Critter.sceneFrame(.ghost, t: 1.5).mood == .startled && Critter.sceneFrame(.ghost, t: 4.0).ghost == 0, "the ghost appears, scares, and fades")
+    check(Critter.sceneFrame(.shootingStar, t: 1.3).star > 0.4 && Critter.sceneFrame(.shootingStar, t: 1.3).star < 0.6 && Critter.sceneFrame(.shootingStar, t: 3.0).mood == .wow, "the star crosses mid-way at 1.3 s")
+    check(Critter.sceneFrame(.box, t: 2.0).box == 1 && Critter.sceneFrame(.box, t: 2.0).mood == .peek && Critter.sceneFrame(.box, t: 6.0).box == 0, "boxed with eyes peeking, then out")
+    check(Critter.sceneFrame(.melt, t: 3.0).melt == 1 && Critter.sceneFrame(.melt, t: 5.9).melt == 0, "melts flat then reforms")
+    check(Critter.sceneFrame(.freeze, t: 2.0).ice == 1 && Critter.sceneFrame(.freeze, t: 4.0 + 1.0 / 120).burst && Critter.sceneFrame(.freeze, t: 5.0).ice == 0, "frozen solid, then cracks out")
+    check(Critter.sceneFrame(.trip, t: 0.5).driveVx == 3.2 && Critter.sceneFrame(.trip, t: 1.2).spinDeg > 90 && Critter.sceneFrame(.trip, t: 2.0).mood == .dizzy, "rolls, trips into a flip, ends dizzy")
+    check(Critter.Scene.allCases.allSatisfy { sc in stride(from: 0.0, through: Critter.sceneDuration(sc), by: 0.05).allSatisfy { !Critter.sceneFrame(sc, t: $0).hidden || sc == .inflate || sc == .manhole || sc == .dash || sc == .ninja } }, "only inflate, manhole, dash and ninja ever hide the body")
+    let fl = { (t: Double) in Critter.sceneFrame(.flood, t: t) }
+    check(fl(2.0).pour && fl(2.0).water > 1 && fl(2.0).water < 2 && fl(4.0).water == 2.4 && fl(4.0).lift == nil && fl(4.0).bubbles, "the glass pours, the water covers it, and it sinks first")
+    check((fl(7.4).lift ?? 0) > 1.5 && fl(8.5).water < 2.4 && fl(10.5).mood == .pant && fl(10.5).water == 0 && fl(10.5).glass == 0, "it swims up, the water drains, and it pants on land")
+    let ap = { (t: Double) in Critter.sceneFrame(.plane, t: t) }
+    check(ap(0.5).plane != nil && ap(0.5).plane!.x < 0 && ap(1.0 + 1.0 / 120).hopNow != nil && (ap(5.0).lift ?? 0) > 3.5 && ap(5.0).clouds && ap(6.0 + 1.0 / 120).lift == nil && ap(7.0).plane!.x > 3 && ap(8.5).mood == .dizzy, "the plane arrives, it hops on, climbs through clouds, jumps, and lands dizzy")
+    let dn = { (t: Double) in Critter.sceneFrame(.dance, t: t) }
+    check(dn(1.0).disco && dn(1.0).notes && dn(1.0).mood == .groove && dn(0.5 + 1.0 / 120).hopNow != nil && dn(4.3).spinDeg > 100, "dancing: disco floor, note eyes, hops on the beat, one spin")
+    let spin = Critter.sceneFrame(.tornado, t: 1.5)
+    check(spin.spin == 1 && spin.dust && spin.driveVx != nil && Critter.sceneFrame(.tornado, t: 3.5).spin == 0, "the tornado spins, moves, then stops dizzy")
+    check((Critter.sceneFrame(.pancake, t: 0.45).anvil ?? 0) > 0.4 && Critter.sceneFrame(.pancake, t: 2.0).flat == 1 && Critter.sceneFrame(.pancake, t: 4.55).flat < 0.05, "the anvil falls, flattens the body, and it re-inflates")
+    check(Critter.sceneFrame(.rubber, t: 1.0).stretch > 0 && Critter.sceneFrame(.rubber, t: 1.0).mood == .laugh && Critter.sceneFrame(.rubber, t: 4.9).stretch == 0, "rubber body stretches while laughing, then relaxes")
+    check(Critter.sceneFrame(.dash, t: 0.65).dashX > 3 && Critter.sceneFrame(.dash, t: 1.5).hidden && Critter.sceneFrame(.dash, t: 2.6).dashX < 0 && Critter.sceneFrame(.dash, t: 3.5).dashX == 0, "the dash leaves right, is gone, and returns from the left")
+    check(Critter.sceneFrame(.eat, t: 2.0).prop && Critter.sceneFrame(.eat, t: 2.0).chew == 1 && Critter.sceneFrame(.eat, t: 4.5).mood == .full, "eating shows the food, chews, ends full")
+    check(Critter.sceneFrame(.read, t: 5).book && Critter.sceneFrame(.read, t: 11.8).mood == .happy, "reading holds the book for most of the scene")
+    check(Critter.sceneFrame(.heartEyes, t: 1).hearts == 1 && Critter.sceneFrame(.heartEyes, t: 2.55).hearts < 0.2, "heart eyes fade at the end")
+    var sch = Critter.Scheduler(playfulness: 1)
+    check(!Critter.Scene.allCases.filter { $0.isCartoon }.contains(sch.pickScene(0.999)), "without cartoon mode the gag reel never plays")
+    sch.cartoon = true
+    check(sch.pickScene(0.999).isCartoon && sch.nextSceneDelay(1) < 400, "cartoon mode adds the gags and shortens the wait")
+    check(sch.pickWeather(0) == .clear && sch.pickWeather(0.999) == .heat && sch.weatherLength(0) == 180 && sch.nextWeatherDelay(1) == 1500, "weather rolls span the table with minute-scale lengths")
+    check(Critter.isNight(hour: 22) && Critter.isNight(hour: 3) && !Critter.isNight(hour: 12), "night is 20:00–06:00")
+    check(Critter.weatherMood(Critter.Sky(kind: .rain, umbrella: true)) == nil && Critter.weatherMood(Critter.Sky(kind: .rain)) == .cold && Critter.weatherMood(Critter.Sky(kind: .heat)) == .hot, "an umbrella keeps the rain from bothering it; heat is hot")
+
+    typealias Care = Critter.Care
+    var st = Care.State(); let t0 = 1_800_000_000.0
+    let s1 = Care.apply(.stroke, to: &st, now: t0)
+    check(s1.accepted && s1.bondGained > 0.5 && st.totalStrokes == 1 && s1.mood == .shy, "the first stroke bonds and makes it shy")
+    let s2 = Care.apply(.stroke, to: &st, now: t0 + 1)
+    check(s2.bondGained == 0, "strokes within 15 s do not add bond")
+    var heart: Care.Outcome? = nil
+    for i in 0..<8 { let o = Care.apply(.stroke, to: &st, now: t0 + Double(i) * 2); if o.scene == .heartEyes { heart = o; break } }
+    check(heart != nil && st.strokeHeat == 0, "enough stroking in a row gives heart eyes and resets the heat")
+    for i in 0..<4 { _ = Care.apply(.tease, to: &st, now: t0 + 100 + Double(i)) }
+    let tooMuch = Care.apply(.tease, to: &st, now: t0 + 105)
+    check(!tooMuch.accepted && tooMuch.mood == .annoyed, "a fifth tease inside 20 s is too much")
+    var fed = Care.State(fullness: 50)
+    let f1 = Care.apply(.feed(.ramen), to: &fed, now: t0)
+    check(f1.scene == .eat && fed.fullness == 88 && f1.bondGained > 1, "ramen fills 38 and bonds")
+    _ = Care.apply(.feed(.rice), to: &fed, now: t0 + 1)
+    let f3 = Care.apply(.feed(.cookie), to: &fed, now: t0 + 2)
+    check(!f3.accepted && f3.mood == .full && fed.totalFeeds == 2, "a full stomach refuses food")
+    var r = Care.State(); let ro = Care.apply(.read, to: &r, now: t0)
+    check(ro.scene == .read && r.knowledge == 5 && r.energy == 75, "reading adds knowledge and costs a little energy")
+    var tired = Care.State(energy: 5); let po = Care.apply(.play, to: &tired, now: t0)
+    check(!po.accepted && po.mood == .sleepy, "too tired to play")
+    var pl = Care.State(); let p1 = Care.apply(.play, to: &pl, now: t0)
+    check(p1.accepted && p1.move != nil && pl.fun == 70 && pl.energy == 72, "playing picks a move, adds fun, costs energy")
+    var d = Care.State()
+    for i in 0..<30 { _ = Care.apply(.dictation, to: &d, now: t0 + Double(i)) }
+    check(d.totalDictations == 30 && d.bond > 5 && d.bond < 7, "dictation bond is capped per day (about 6)")
+    var v = Care.State(); _ = Care.apply(.visit, to: &v, now: t0)
+    let v2 = Care.apply(.visit, to: &v, now: t0 + 86400)
+    check(v.streakDays == 2 && v2.mood == .happy, "coming back the next day extends the streak")
+    var gone = v; gone.bond = 30; let v3 = Care.apply(.visit, to: &gone, now: t0 + 86400 * 5)
+    check(gone.streakDays == 1 && v3.mood == .sulky, "three days away breaks the streak and earns a sulk")
+    var dec = Care.State(bond: 50); Care.decay(&dec, hours: 10)
+    check(dec.fullness == 20 && dec.fun == 20 && dec.energy == 60 && dec.bond == 50, "ten hours: hungry and bored, bond untouched until neglect")
+    Care.decay(&dec, hours: 2)
+    check(dec.bond < 50 && dec.bond > 49.5, "neglect wears bond down slowly")
+    check(Care.need(dec) == .hungry && Care.need(Care.State(bond: 20, fun: 10)) == .sulky && Care.need(Care.State(energy: 10)) == .sleepy && Care.need(Care.State()) == nil, "needs show in a fixed order: hunger, sleep, sulk")
+    check(Care.level(0) == 0 && Care.level(15) == 1 && Care.level(84.9) == 3 && Care.level(100) == 4 && Care.title(60) == "เพื่อนซี้", "levels follow the bond floors")
+    var big = Care.State(bond: 99); _ = Care.gain(&big, 5)
+    check(big.bond <= 100 && big.bond > 99, "bond never passes 100")
+    let data = try! JSONEncoder().encode(st); let back = try! JSONDecoder().decode(Care.State.self, from: data)
+    check(back == st, "care state round-trips through JSON")
+}
+print("Care/weather checks passed; total \(checks)")
