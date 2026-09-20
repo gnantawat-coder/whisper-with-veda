@@ -221,6 +221,11 @@ final class Model: ObservableObject {
     @Published var pending: [String] = []
     var holdReason = "-"
     var snapLast = "-"
+    // Corner character vs the classic bar; the character is the default the user asked for.
+    @Published var overlayStyle = UserDefaults.standard.string(forKey: "overlayStyle") ?? "character" { didSet { UserDefaults.standard.set(overlayStyle, forKey: "overlayStyle") } }
+    @Published var critterPlayfulness = UserDefaults.standard.object(forKey: "critterPlayfulness") as? Int ?? 1 { didSet { UserDefaults.standard.set(critterPlayfulness, forKey: "critterPlayfulness") } }
+    @Published var critterReduceMotion = UserDefaults.standard.bool(forKey: "critterReduceMotion") { didSet { UserDefaults.standard.set(critterReduceMotion, forKey: "critterReduceMotion") } }
+    let critterCues = PassthroughSubject<CritterCue, Never>()
     var tapLevel = "-"
     @Published var slangMode: Slang.Mode = Slang.Mode(rawValue: UserDefaults.standard.string(forKey: "slangMode") ?? "") ?? .polite { didSet { UserDefaults.standard.set(slangMode.rawValue, forKey: "slangMode") } }
     @Published var slangNotes = UserDefaults.standard.object(forKey: "slangNotes") as? Bool ?? true { didSet { UserDefaults.standard.set(slangNotes, forKey: "slangNotes") } }
@@ -371,6 +376,7 @@ final class Model: ObservableObject {
     var heldVocabulary = ""
     var settingsAction: (() -> Void)?
     var relaunchAction: (() -> Void)?
+    var playgroundAction: (() -> Void)?
     @Published var lastLatency = "ยังไม่มีการทดสอบเสียงจริง"
     func refreshPermissions() {
         let auth = AVCaptureDevice.authorizationStatus(for: .audio)
@@ -412,10 +418,11 @@ final class Model: ObservableObject {
     }
     func block(_ message: String) {
         status = message; needsAttention = true; lastStage = "เริ่มไม่ได้: " + message
-        showNotice(message); writeDiagnostics()
+        showNotice(message); critterCues.send(.error); writeDiagnostics()
     }
     func showNotice(_ message: String) {
         hideNoticeWork?.cancel(); notice = message; overlayVisible = true
+        if overlayStyle == "character" && !message.hasPrefix("เลือก TH") && !message.hasPrefix("เปลี่ยนภาษา") { critterCues.send(.notice(message)) }
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.notice = nil
@@ -427,7 +434,7 @@ final class Model: ObservableObject {
     func copyLatest() {
         guard let text = pending.last else { return }
         NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
-        showNotice("คัดลอกแล้ว")
+        showNotice("คัดลอกแล้ว"); critterCues.send(.copied)
     }
     func restoreUpgradeText() {
         let url = URL(fileURLWithPath: PendingArchive.path(uid: getuid()))
@@ -472,7 +479,7 @@ final class Model: ObservableObject {
         Task { @MainActor in
             for _ in 0..<120 {
                 if await backend.ready() { ready = true; waitingForPermissions = !microphoneAllowed || !accessibilityAllowed; needsAttention = waitingForPermissions; status = "กด Fn ค้างเพื่อพูด"; refreshPermissions(); return }
-                if backend.process?.isRunning != true { block("ตัวประมวลผลหยุดทำงาน หรือมี Veda อีกสำเนาเปิดอยู่ ให้ปิด Veda ทุกสำเนาแล้วเปิดใหม่"); return }
+                if backend.process?.isRunning != true { block("ตัวประมวลผลหยุดทำงาน หรือมี gluu bot อีกสำเนาเปิดอยู่ ให้ปิด gluu bot ทุกสำเนาแล้วเปิดใหม่"); return }
                 try? await Task.sleep(nanoseconds: 500_000_000)
             }
             status = "โมเดลยังไม่พร้อม — เปิดแอปใหม่หรือตรวจ runtime"
@@ -634,7 +641,7 @@ final class Model: ObservableObject {
                         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
                         let dest = dir.appendingPathComponent(spec.fileName)
                         try? FileManager.default.removeItem(at: dest)
-                        outcome = (try? FileManager.default.moveItem(at: temp, to: dest)) != nil ? "ติดตั้งโมเดลแล้ว · เปิด Veda ใหม่เพื่อเริ่มใช้" : "ย้ายไฟล์เข้าโฟลเดอร์โมเดลไม่ได้"
+                        outcome = (try? FileManager.default.moveItem(at: temp, to: dest)) != nil ? "ติดตั้งโมเดลแล้ว · เปิด gluu bot ใหม่เพื่อเริ่มใช้" : "ย้ายไฟล์เข้าโฟลเดอร์โมเดลไม่ได้"
                     }
                     try? FileManager.default.removeItem(at: temp)
                 }
@@ -722,6 +729,7 @@ final class Model: ObservableObject {
                 lastStage = text.isEmpty ? "โมเดลไม่พบข้อความ" : inserted ? "แทรกสำเร็จ" : "พักข้อความ: เป้าหมายเปลี่ยนหรือช่องไม่รองรับ Accessibility"
                 status = text.isEmpty ? "ไม่พบข้อความ" : inserted ? "แทรกแล้ว · \(Int(elapsed)) ms" : "ยังไม่ได้พิมพ์ · คลิกไอคอนคลื่นเสียงเพื่อคัดลอก"
                 if !inserted { showNotice(status) }
+                critterCues.send(inserted ? .done : text.isEmpty ? .notice("ไม่พบข้อความ") : .held)
             } catch {
                 guard token == id else { return }
                 logLatency(mode: mode, ms: (ProcessInfo.processInfo.systemUptime - released) * 1000, outcome: "error")
@@ -828,7 +836,7 @@ struct Bar: View {
                         .overlay(Capsule(style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5))
                         .shadow(color: .black.opacity(0.12), radius: 2, y: 1)
                         .padding(.horizontal, 12).padding(.vertical, 9).contentShape(Rectangle())
-                }.buttonStyle(.plain).accessibilityLabel("Veda · เปิดแถบ TH/EN")
+                }.buttonStyle(.plain).accessibilityLabel("gluu bot · เปิดแถบ TH/EN")
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom).padding(.bottom, 3)
     }
@@ -931,7 +939,7 @@ struct Settings: View {
             VStack(alignment: .leading, spacing: 24) {
                 HStack(spacing: 10) {
                     WaveformMark(size: 22).foregroundStyle(.cyan)
-                    Text("Veda").font(.system(size: 23, weight: .semibold, design: .rounded))
+                    Text("gluu bot").font(.system(size: 23, weight: .semibold, design: .rounded))
                 }.padding(.top, 8)
                 VStack(spacing: 5) {
                     ForEach(0..<sections.count, id: \.self) { index in
@@ -950,7 +958,7 @@ struct Settings: View {
                 Spacer()
                 Label("ประมวลผลบน Mac", systemImage: "lock.shield").font(.caption).foregroundStyle(.secondary)
                 Divider()
-                Button("ออกจาก Veda") { NSApp.terminate(nil) }.buttonStyle(.plain).font(.caption)
+                Button("ออกจาก gluu bot") { NSApp.terminate(nil) }.buttonStyle(.plain).font(.caption)
                 Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Development").font(.caption2).foregroundStyle(.tertiary)
             }.padding(20).frame(width: 185).frame(maxHeight: .infinity).background(.ultraThinMaterial)
             Divider()
@@ -958,22 +966,22 @@ struct Settings: View {
                 VStack(alignment: .leading, spacing: 18) {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(sections[section].0).font(.system(size: 25, weight: .semibold))
-                        Text(section == 0 ? "พูดอย่างเป็นธรรมชาติ ให้ Veda ช่วยพิมพ์" : section == 1 ? "ข้อความที่ยังไม่ได้พิมพ์ลงช่อง เก็บไว้ให้คัดลอก" : section == 3 ? "คำศัพท์และตัวอย่างเสียงสำหรับการใช้งานของคุณ" : "ตรวจความพร้อมของไมโครโฟนและการพิมพ์")
+                        Text(section == 0 ? "พูดอย่างเป็นธรรมชาติ ให้ gluu bot ช่วยพิมพ์" : section == 1 ? "ข้อความที่ยังไม่ได้พิมพ์ลงช่อง เก็บไว้ให้คัดลอก" : section == 3 ? "คำศัพท์และตัวอย่างเสียงสำหรับการใช้งานของคุณ" : "ตรวจความพร้อมของไมโครโฟนและการพิมพ์")
                             .font(.system(size: 12)).foregroundStyle(.secondary)
                     }.padding(.bottom, 6)
                     if section == 0 {
                         if !(model.microphoneAllowed && model.accessibilityAllowed && CGPreflightScreenCaptureAccess() && model.hasAccurateModel) {
                             card("ตั้งค่าครั้งแรก · 4 ขั้น") {
-                                Text("Veda ทำงานบนเครื่องล้วน แต่ macOS ต้องให้คุณอนุญาตเอง 3 อย่าง (ทุกครั้งที่อัปเดต เพราะแอปยังไม่ได้เซ็นด้วย Developer ID)").font(.caption).foregroundStyle(.secondary)
+                                Text("gluu bot ทำงานบนเครื่องล้วน แต่ macOS ต้องให้คุณอนุญาตเอง 3 อย่าง (ทุกครั้งที่อัปเดต เพราะแอปยังไม่ได้เซ็นด้วย Developer ID)").font(.caption).foregroundStyle(.secondary)
                                 setupStep(1, done: model.microphoneAllowed, title: "ไมโครโฟน", why: "ฟังเสียงตอนคุณกด Fn ค้าง") {
                                     Button("อนุญาต") { model.microphonePermission() }
                                 }
                                 setupStep(2, done: model.accessibilityAllowed, title: "Accessibility", why: "พิมพ์ข้อความลงช่องที่คุณกำลังใช้ และรับปุ่ม Fn") {
                                     Button("เปิดหน้าตั้งค่า") { model.accessibilityPermission() }
                                 }
-                                setupStep(3, done: CGPreflightScreenCaptureAccess(), title: "Screen Recording", why: "แคปหน้าจอสำหรับ Snap Translate · เปิดสวิตช์แล้วต้องเปิด Veda ใหม่") {
+                                setupStep(3, done: CGPreflightScreenCaptureAccess(), title: "Screen Recording", why: "แคปหน้าจอสำหรับ Snap Translate · เปิดสวิตช์แล้วต้องเปิด gluu bot ใหม่") {
                                     Button("ขอสิทธิ์") { CGRequestScreenCaptureAccess() }
-                                    Button("เปิด Veda ใหม่") { model.relaunchAction?() }
+                                    Button("เปิด gluu bot ใหม่") { model.relaunchAction?() }
                                 }
                                 setupStep(4, done: model.hasAccurateModel, title: "โมเดลภาษาไทยความแม่นสูง (1.08 GB)", why: "ดาวน์โหลดครั้งเดียวจาก Hugging Face ตรวจ checksum ก่อนใช้ · ไม่มีโมเดลนี้จะใช้รุ่นเล็กที่แม่นน้อยกว่ามาก") {
                                 if model.modelDownloading {
@@ -981,11 +989,25 @@ struct Settings: View {
                                     Button("ยกเลิก") { model.cancelModelDownload() }
                                 } else {
                                     Button("ดาวน์โหลด") { model.downloadAccurateModel() }
-                                    if model.modelDownloadStatus.hasPrefix("ติดตั้งโมเดลแล้ว") { Button("เปิด Veda ใหม่") { model.relaunchAction?() } }
+                                    if model.modelDownloadStatus.hasPrefix("ติดตั้งโมเดลแล้ว") { Button("เปิด gluu bot ใหม่") { model.relaunchAction?() } }
                                 }
                             }
                             if !model.modelDownloadStatus.isEmpty { Text(model.modelDownloadStatus).font(.caption).foregroundStyle(.secondary) }
                                 Button("ตรวจใหม่") { model.refreshPermissions() }.controlSize(.small)
+                            }
+                        }
+                        card("การแสดงผล") {
+                            Picker("การแสดงผล", selection: $model.overlayStyle) {
+                                Text("ตัวละครมุมจอ · กลิ้ง เด้ง มีอารมณ์").tag("character")
+                                Text("แถบดำกลางจอแบบเดิม").tag("classic")
+                            }.pickerStyle(.radioGroup).labelsHidden()
+                            if model.overlayStyle == "character" {
+                                Picker("ความขี้เล่น", selection: $model.critterPlayfulness) {
+                                    Text("เงียบ").tag(0); Text("ปกติ").tag(1); Text("ขี้เล่น").tag(2)
+                                }.pickerStyle(.segmented).frame(maxWidth: 260)
+                                Toggle("ลดการเคลื่อนไหว (หยุดกลิ้ง/เด้ง เหลือแค่ตามอง)", isOn: $model.critterReduceMotion).toggleStyle(.switch).controlSize(.small)
+                                Button("เปิดหน้าต่างดูท่าทางและอารมณ์") { model.playgroundAction?() }.controlSize(.small)
+                Text("คลิกที่ตัวละครเพื่อเปิดหน้านี้ · Fn + Option วนโหมดความขี้เล่น · ตั้งค่า \"ลดการเคลื่อนไหว\" ของ macOS มีผลด้วยเสมอ").font(.caption2).foregroundStyle(.secondary)
                             }
                         }
                         card("ภาษาผลลัพธ์") {
@@ -1002,7 +1024,7 @@ struct Settings: View {
                                     .background(.quaternary, in: RoundedRectangle(cornerRadius: 9))
                                 VStack(alignment: .leading, spacing: 5) {
                                     Text("กดค้างเพื่อพูด · ปล่อยเพื่อพิมพ์").font(.system(size: 13, weight: .medium))
-                                    Text("Fn + Space หรือ F18 + Space สลับ TH/EN · Escape ยกเลิก").font(.caption).foregroundStyle(.secondary)
+                                    Text("Fn + Space สลับ TH/EN · Fn + Option ความขี้เล่น · Escape ยกเลิก").font(.caption).foregroundStyle(.secondary)
                                 }
                             }
                             Text(model.status).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
@@ -1020,19 +1042,19 @@ struct Settings: View {
                                 Label(CGPreflightScreenCaptureAccess() ? "Screen Recording · อนุญาตแล้ว" : "Screen Recording · ยังไม่มีผลในโปรเซสนี้", systemImage: CGPreflightScreenCaptureAccess() ? "checkmark.circle.fill" : "exclamationmark.circle").font(.caption)
                                 if !CGPreflightScreenCaptureAccess() {
                                     Button("ขอสิทธิ์") { CGRequestScreenCaptureAccess() }.controlSize(.small)
-                                    Button("เปิด Veda ใหม่") { model.relaunchAction?() }.controlSize(.small)
+                                    Button("เปิด gluu bot ใหม่") { model.relaunchAction?() }.controlSize(.small)
                                 }
                             }
-                            if !CGPreflightScreenCaptureAccess() { Text("ถ้าเปิดสวิตช์ใน System Settings แล้ว ต้องเปิด Veda ใหม่สิทธิ์จึงมีผล · ข้อความพักถูกเก็บและคืนให้อัตโนมัติ").font(.caption2).foregroundStyle(.secondary) }
+                            if !CGPreflightScreenCaptureAccess() { Text("ถ้าเปิดสวิตช์ใน System Settings แล้ว ต้องเปิด gluu bot ใหม่สิทธิ์จึงมีผล · ข้อความพักถูกเก็บและคืนให้อัตโนมัติ").font(.caption2).foregroundStyle(.secondary) }
                             Toggle("อ่านออกเสียงคำแปลหลังแปลเสร็จ", isOn: $model.snapSpeak).toggleStyle(.switch).controlSize(.small)
                             HStack(spacing: 8) {
                                 Button(model.recordingShortcut ? "กดปุ่มลัดที่ต้องการ… (Esc ยกเลิก)" : "เปลี่ยนปุ่มลัด") { model.recordingShortcut ? model.endRecordingShortcut() : model.beginRecordingShortcut() }.controlSize(.small)
                                 if model.snapShortcut != .default { Button("กลับเป็น ⇧⌘3") { model.snapShortcut = .default }.controlSize(.small) }
                             }
-                            Text("ต้องมี ⌘ ⌥ ⌃ หรือ ⇧ อย่างน้อยหนึ่งตัว · ⇧⌘3 ซ้ำกับแคปทั้งจอของ macOS: Veda กลืนไว้ก่อน ถ้ายังแคปซ้อน ปิดใน System Settings › Keyboard › Shortcuts › Screenshots · ผลลัพธ์โผล่ข้างเคอร์เซอร์ คลิกที่อื่นหรือ Esc เพื่อปิด").font(.caption2).foregroundStyle(.secondary)
+                            Text("ต้องมี ⌘ ⌥ ⌃ หรือ ⇧ อย่างน้อยหนึ่งตัว · ⇧⌘3 ซ้ำกับแคปทั้งจอของ macOS: gluu bot กลืนไว้ก่อน ถ้ายังแคปซ้อน ปิดใน System Settings › Keyboard › Shortcuts › Screenshots · ผลลัพธ์โผล่ข้างเคอร์เซอร์ คลิกที่อื่นหรือ Esc เพื่อปิด").font(.caption2).foregroundStyle(.secondary)
                         }
                         card("สแลงและสำนวน") {
-                            Text("ตัวแปลบนเครื่องแปลตามตัวอักษร (\"เดือดสัส\" → \"boiling\") Veda จึงแปลงสำนวนที่รู้จักให้ก่อน แล้วบอกคุณทุกครั้งที่ทำ").font(.caption).foregroundStyle(.secondary)
+                            Text("ตัวแปลบนเครื่องแปลตามตัวอักษร (\"เดือดสัส\" → \"boiling\") gluu bot จึงแปลงสำนวนที่รู้จักให้ก่อน แล้วบอกคุณทุกครั้งที่ทำ").font(.caption).foregroundStyle(.secondary)
                             Picker("โหมดเริ่มต้น", selection: $model.slangMode) {
                                 Text("สุภาพ · สแลงเป็นภาษามาตรฐาน").tag(Slang.Mode.polite)
                                 Text("แชทจริง · รักษาระดับภาษา คำหยาบยังหยาบ").tag(Slang.Mode.chat)
@@ -1072,7 +1094,7 @@ struct Settings: View {
                         }
                         card("คำศัพท์ของคุณ") {
                             Text("ชื่อคน ชื่อโปรเจกต์ และศัพท์เทคนิค คั่นด้วยจุลภาค").font(.caption).foregroundStyle(.secondary)
-                            editor($model.vocabulary, placeholder: "เช่น Veda, Keychron, ถอดเสียง", height: 65)
+                            editor($model.vocabulary, placeholder: "เช่น gluu bot, Keychron, ถอดเสียง", height: 65)
                             Text("คำศัพท์เป็นคำใบ้สำหรับโมเดล อาจยังสะกดชื่อเฉพาะคลาดเคลื่อน").font(.caption2).foregroundStyle(.secondary)
                         }
                     } else if section == 1 {
@@ -1281,6 +1303,31 @@ final class Delegate: NSObject, NSApplicationDelegate {
     var activation: NSObjectProtocol?
     var panelObservation: AnyCancellable?
     var screenObservation: NSObjectProtocol?
+    var critter: CritterPanel?
+    var critterBag = Set<AnyCancellable>()
+    func applyOverlayStyle() {
+        if model.overlayStyle == "character" {
+            if critter == nil {
+                let engine = CritterEngine()
+                let p = CritterPanel(engine: engine)
+                engine.onTap = { [weak self] in self?.showSettings() }
+                engine.settingsIsFront = { [weak self] in (self?.settings?.isVisible ?? false) && (self?.settings?.isKeyWindow ?? false) }
+                model.$phase.receive(on: RunLoop.main).sink { [weak engine] phase in
+                    switch phase { case .starting, .recording: engine?.setExternal(.listening); case .processing: engine?.setExternal(.thinking); case .idle: if engine?.external != .done { engine?.setExternal(.idle) } }
+                }.store(in: &critterBag)
+                model.$level.receive(on: RunLoop.main).sink { [weak engine] l in engine?.level = Double(l) }.store(in: &critterBag)
+                model.critterCues.receive(on: RunLoop.main).sink { [weak engine] c in engine?.cue(c) }.store(in: &critterBag)
+                model.$critterPlayfulness.receive(on: RunLoop.main).sink { [weak engine] v in engine?.scheduler.playfulness = v }.store(in: &critterBag)
+                model.$critterReduceMotion.receive(on: RunLoop.main).sink { [weak engine] v in engine?.reduceMotion = v || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }.store(in: &critterBag)
+                critter = p
+            }
+            critter?.place(); critter?.orderFrontRegardless(); critter?.engine.start()
+            panel.orderOut(nil)
+        } else {
+            critter?.engine.stop(); critter?.orderOut(nil)
+            panel.orderFrontRegardless()
+        }
+    }
     var item: NSStatusItem!
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard instanceLock.acquire(path: "/private/tmp/local.veda.\(getuid()).lock") else { NSApp.terminate(nil); return }
@@ -1304,7 +1351,10 @@ final class Delegate: NSObject, NSApplicationDelegate {
         }
         model.hideSettingsForDictation = { [weak self] in self?.settings?.orderOut(nil) }
         model.settingsAction = { [weak self] in self?.showSettings() }
+        applyOverlayStyle()
+        model.$overlayStyle.dropFirst().receive(on: RunLoop.main).sink { [weak self] _ in self?.applyOverlayStyle() }.store(in: &critterBag)
         model.relaunchAction = { [weak self] in self?.relaunch() }
+        model.playgroundAction = { [weak self] in self?.showPlayground() }
         installGlobalMonitor()
         model.accessChanged = { [weak self] in self?.installGlobalMonitor() }
         local = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged, .keyDown, .keyUp, .leftMouseDown, .rightMouseDown]) { [weak self] e in self?.event(e); return e }
@@ -1312,7 +1362,7 @@ final class Delegate: NSObject, NSApplicationDelegate {
             guard let self, self.model.phase != .idle else { return }; self.model.invalidateTarget()
         }
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = WaveformIcon.menuImage(); item.button?.image?.isTemplate = true; item.button?.toolTip = "Veda"; item.button?.target = self; item.button?.action = #selector(showMenu)
+        item.button?.image = WaveformIcon.menuImage(); item.button?.image?.isTemplate = true; item.button?.toolTip = "gluu bot"; item.button?.target = self; item.button?.action = #selector(showMenu)
         model.prepare()
         model.showNotice("เลือก TH หรือ EN แล้วกด Fn ค้าง")
         // A fresh install (or a re-signed update) has no permissions: show the 3-step card right away.
@@ -1323,6 +1373,8 @@ final class Delegate: NSObject, NSApplicationDelegate {
         }
     }
     func resizePanel(active: Bool, hasNotice: Bool) {
+        critter?.place()
+        guard model.overlayStyle != "character" else { panel.orderOut(nil); return }
         guard let screen = panel.screen ?? NSScreen.main ?? NSScreen.screens.first else { return }
         panel.setFrame(OverlayPlacement.frame(screen: screen.frame, visible: screen.visibleFrame, active: active), display: true, animate: false)
     }
@@ -1340,6 +1392,12 @@ final class Delegate: NSObject, NSApplicationDelegate {
                 if self.model.phase != .idle { self.model.cancel() }
                 self.model.selectMode(self.model.mode == .th ? .en : .th)
                 self.model.showNotice("เปลี่ยนภาษาเป็น " + self.model.mode.rawValue)
+                self.model.critterCues.send(.language(self.model.mode))
+            case .playfulness:
+                self.model.fnDown = false
+                if self.model.phase != .idle && self.model.phase != .processing { self.model.cancel() }
+                self.model.critterPlayfulness = (self.model.critterPlayfulness + 1) % 3
+                self.model.showNotice("ความขี้เล่น: " + ["เงียบ", "ปกติ", "ขี้เล่น"][self.model.critterPlayfulness])
             }
         }
     }
@@ -1375,6 +1433,11 @@ final class Delegate: NSObject, NSApplicationDelegate {
             if owner.model.externalF18, key == Int64(kVK_F18), type == .keyDown || type == .keyUp {
                 if let action = owner.shortcut.trigger(.f18, down: type == .keyDown) { owner.dispatchShortcut(action) }
                 return nil
+            }
+            // Fn + Option cycles the character's playfulness. Modifiers pass through untouched.
+            if type == .flagsChanged, key == 58 || key == 61 {
+                if let action = owner.shortcut.option(down: event.flags.contains(.maskAlternate)) { owner.dispatchShortcut(action) }
+                return Unmanaged.passUnretained(event)
             }
             guard type == .flagsChanged, key == 63 else { return Unmanaged.passUnretained(event) }
             if let action = owner.shortcut.trigger(.fn, down: event.flags.contains(.maskSecondaryFn)) { owner.dispatchShortcut(action) }
@@ -1420,7 +1483,7 @@ final class Delegate: NSObject, NSApplicationDelegate {
         else if (e.type == .leftMouseDown || e.type == .rightMouseDown) {
             // The result card is transient: a click anywhere else dismisses it.
             if snap.isVisible, !snap.frameContains(NSEvent.mouseLocation) { snap.close() }
-            if !panel.frame.contains(NSEvent.mouseLocation) { model.invalidateTarget() }
+            if !panel.frame.contains(NSEvent.mouseLocation) && !(critter?.frame.contains(NSEvent.mouseLocation) ?? false) { model.invalidateTarget() }
         }
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -1430,22 +1493,39 @@ final class Delegate: NSObject, NSApplicationDelegate {
     }
     @objc func showMenu() {
         let menu = NSMenu()
-        for (title, action) in [("เปิดแถบ TH/EN", #selector(revealBar)), ("ตั้งค่าและข้อความพัก", #selector(showSettings)), ("ออกจาก Veda", #selector(quitVeda))] {
+        for (title, action) in [("เปิดแถบ TH/EN", #selector(revealBar)), ("ตั้งค่าและข้อความพัก", #selector(showSettings)), ("ออกจาก gluu bot", #selector(quitVeda))] {
             let entry = NSMenuItem(title: title, action: action, keyEquivalent: "")
             entry.target = self; menu.addItem(entry)
         }
         item.menu = menu; item.button?.performClick(nil); item.menu = nil
     }
-    @objc func revealBar() { model.showNotice("เลือก TH หรือ EN แล้วกด Fn ค้าง"); panel.orderFrontRegardless() }
+    @objc func revealBar() { model.showNotice("เลือก TH หรือ EN แล้วกด Fn ค้าง"); if model.overlayStyle == "character" { critter?.orderFrontRegardless() } else { panel.orderFrontRegardless() } }
     @objc func quitVeda() { NSApp.terminate(nil) }
     @objc func showSettings() {
         model.refreshPermissions()
         if settings == nil {
             settings = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 650), styleMask: [.titled, .closable], backing: .buffered, defer: false)
-            settings?.title = "Veda"; settings?.isReleasedWhenClosed = false
+            settings?.title = "gluu bot"; settings?.isReleasedWhenClosed = false
             settings?.contentView = NSHostingView(rootView: Settings(model: model)); settings?.center()
         }
         settings?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+    }
+    var playground: NSWindow?
+    var playgroundEngine: CritterEngine?
+    @objc func showPlayground() {
+        if playground == nil {
+            let engine = CritterEngine(radius: 44, area: Critter.Area(width: 416, height: 272))
+            engine.scheduler.playfulness = model.critterPlayfulness
+            engine.reduceMotion = model.critterReduceMotion || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            model.$critterPlayfulness.receive(on: RunLoop.main).sink { [weak engine] v in engine?.scheduler.playfulness = v }.store(in: &critterBag)
+            let view = CritterPlayground(engine: engine, model: model)
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 720), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            w.title = "ดูท่าทางและอารมณ์"; w.isReleasedWhenClosed = false; w.contentView = NSHostingView(rootView: view); w.center()
+            NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: w, queue: .main) { [weak engine] _ in engine?.stop() }
+            playground = w; playgroundEngine = engine
+        }
+        playgroundEngine?.start()
+        playground?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
     }
     func applicationWillTerminate(_ notification: Notification) {
         model.preservePendingForUpgrade()

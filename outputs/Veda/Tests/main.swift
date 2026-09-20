@@ -72,6 +72,12 @@ for trigger in [DictationShortcut.Trigger.fn, .f18] {
     check(shortcut.trigger(trigger, down: true) == .begin, "next hold starts")
     check(shortcut.trigger(trigger, down: false) == .end, "ordinary release transcribes")
 }
+var chord = DictationShortcut()
+check(chord.option(down: true) == nil, "Option alone does nothing")
+_ = chord.trigger(.fn, down: true)
+check(chord.option(down: true) == .playfulness, "Option while Fn is held cycles playfulness")
+check(chord.option(down: false) == nil, "Option release is ignored")
+check(chord.trigger(.fn, down: false) == nil, "the hold that carried the chord is cancelled, not transcribed")
 print("Shortcut checks passed; total \(checks)")
 
 // Held text must survive an update: encode only when there is something to keep,
@@ -264,3 +270,66 @@ check(ModelDownload.largeV3Q5.url.host == "huggingface.co" && ModelDownload.larg
 check(ModelDownload.progressLabel(received: 540_570_102, total: 1_081_140_203) == "541 / 1081 MB · 50%", "progress label rounds to whole megabytes")
 check(ModelDownload.progressLabel(received: 12_000_000, total: 0) == "12 MB", "unknown total still shows received")
 print("Model download checks passed; total \(checks)")
+
+// Critter: the rules that make the corner character move and emote, checked without a screen.
+do {
+    let area = Critter.Area.standard
+    var b = Critter.Body(x: 200, y: 100, radius: 44)
+    var landed = false
+    for _ in 0..<240 { if Critter.step(&b, in: area, dt: 1.0 / 60, rng: { 0.5 }).contains(where: { if case .landed = $0 { return true } else { return false } }) { landed = true } }
+    check(landed && b.onGround && abs(b.y - Critter.ground(b, in: area)) < 0.01, "a dropped body lands and comes to rest on the floor")
+    check(b.squash > 0.97 && b.squash < 1.03, "the landing squash springs back to round")
+
+    var w = Critter.Body(x: 200, y: Critter.ground(Critter.Body(x: 0, y: 0, radius: 44), in: area), radius: 44)
+    w.vx = 600; var hitWall = false
+    for _ in 0..<60 { if Critter.step(&w, in: area, dt: 1.0 / 60, rng: { 0.5 }).contains(where: { if case .wall = $0 { return true } else { return false } }) { hitWall = true } }
+    check(hitWall && w.vx < 0 && w.x <= Critter.maxX(w, in: area), "a fast roll bounces back off the wall")
+    check(w.x >= Critter.minX(w) && w.x <= Critter.maxX(w, in: area), "the body never leaves the area")
+
+    var zz = Critter.Body(x: 60, y: 100, radius: 44); Critter.zigzag(&zz, in: area, rng: { 0.5 })
+    var walls = 0, startled = false
+    for _ in 0..<300 { for e in Critter.step(&zz, in: area, dt: 1.0 / 60, rng: { 0.5 }) { if case .wall = e { walls += 1 }; if e == .startled { startled = true } } }
+    check(walls >= 4 && startled, "zigzag hits the walls four times and ends startled")
+
+    var d = Critter.Body(x: 60, y: 100, radius: 44); Critter.dribble(&d)
+    var bounces = 0
+    for _ in 0..<600 { for e in Critter.step(&d, in: area, dt: 1.0 / 60, rng: { 0.5 }) { if case .landed = e { bounces += 1 } } }
+    check(bounces >= 5, "a dribble bounces at least five times before resting")
+
+    var deep = Critter.Body(x: 200, y: 100, radius: 44); Critter.goDeep(&deep)
+    var maxZ = 0.0, arrived = false, returned = false
+    for _ in 0..<(60 * 8) { for e in Critter.step(&deep, in: area, dt: 1.0 / 60, rng: { 0.5 }) { if e == .deepArrived { arrived = true }; if e == .deepReturned { returned = true } }; maxZ = max(maxZ, deep.z) }
+    check(arrived && returned && maxZ > 0.9 && deep.z < 0.05, "the depth trip goes all the way in and comes back")
+    check(abs(deep.drawRadius - deep.radius) < 2, "back at the front the drawn radius is the real radius")
+
+    var small = Critter.Body(x: 100, y: 50, radius: 24)
+    for _ in 0..<240 { _ = Critter.step(&small, in: Critter.Area(width: 260, height: 170), dt: 1.0 / 60, rng: { 0.5 }) }
+    check(small.onGround, "the same rules settle at the on-screen radius too")
+}
+do {
+    var face = Critter.Face()
+    let target = Critter.expressions[.sad]!
+    for _ in 0..<40 { face.approach(target, breath: 0, extraTilt: 0, k: 0.16) }
+    check(abs(face.left.r - target.left.r) < 0.5 && abs(face.right.r - target.right.r) < 0.5 && face.front > 0.95 && face.tear > 0.9, "a face converges on the target expression, turning to the front")
+    let a0 = Critter.anchors(front: 0), a1 = Critter.anchors(front: 1)
+    check(a0.left.x == 39 && a1.left.x == 47 && a1.right.x == 73 && a1.left.y == a1.right.y, "front anchors are symmetric; the rest pose is the reference offset")
+    check(abs(Critter.turnSqueeze(front: 0) - 1) < 1e-9 && Critter.turnSqueeze(front: 0.5) < 0.95 && abs(Critter.turnSqueeze(front: 1) - 1) < 1e-9, "the body narrows only mid-turn")
+    check(Critter.Mood.allCases.allSatisfy { Critter.expressions[$0] != nil }, "every mood has an expression")
+    let fronts = Critter.Mood.allCases.filter { Critter.expressions[$0]!.front >= 1 }
+    check(fronts.contains(.happy) && fronts.contains(.sad) && fronts.contains(.shy) && !fronts.contains(.bored) && !fronts.contains(.normal), "symmetry-read emotions face front; gaze-read ones stay turned")
+}
+do {
+    let s = Critter.Scheduler(playfulness: 0), p = Critter.Scheduler(playfulness: 2)
+    check(s.nextMoveDelay(0) == 7 && s.nextMoveDelay(1) == 14 && p.nextMoveDelay(0) == 1.8, "quiet waits longer than playful")
+    check(s.pickMove(0) == .roll && s.pickMove(0.999) == .deep, "weighted picks cover the whole table")
+    var gated = Critter.Scheduler(playfulness: 1); gated.lastDeepAt = 100
+    check(gated.pickMove(0.999, now: 400) == .roll && gated.pickMove(0.999, now: 100 + 601) == .deep, "the depth trip waits at least ten minutes between trips")
+    check(Critter.Scheduler.moveWeights.first { $0.0 == .deep }!.1 <= 3, "the depth trip is the rarest move")
+    check(Critter.expressions[.bye]!.arc && Critter.expressions[.bye]!.tilt > 0 && Critter.expressions[.back]!.spark, "goodbye is a tilted smile, coming back sparkles")
+    check(abs(Critter.home(in: Critter.Area.standard) - 176.8) < 0.01, "the rest position sits right of centre, well inside the area")
+    var counts: [Critter.Mood: Int] = [:]
+    for i in 0..<1000 { counts[s.pickMood(Double(i) / 1000), default: 0] += 1 }
+    check((counts[.normal] ?? 0) > 350 && (counts[.wow] ?? 0) < 90, "normal dominates and wow is rare")
+    check(Critter.Scheduler(playfulness: 9).nextMoveDelay(0) == 1.8, "out-of-range playfulness clamps")
+}
+print("Critter checks passed; total \(checks)")

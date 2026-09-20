@@ -1,18 +1,18 @@
-# Veda — พิมพ์ด้วยเสียงภาษาไทยบน Mac ทั้งหมดบนเครื่อง
+# gluu bot (เดิมชื่อ Veda) — พิมพ์ด้วยเสียงภาษาไทยบน Mac ทั้งหมดบนเครื่อง
 
 Veda คือแอป macOS สำหรับ**พูดแล้วพิมพ์** (ไทย → ข้อความไทย หรือ ไทย → อังกฤษ) และ **Snap Translate** (ลากเลือกข้อความบนจอ → แปล ไทย ↔ อังกฤษ ทันที) ทุกอย่างประมวลผลบนเครื่องด้วย [whisper.cpp](https://github.com/ggerganov/whisper.cpp) และ Apple Translation — **ไม่มีเสียง ข้อความ หรือภาพหน้าจอถูกส่งออกจากเครื่อง**
 
-> Veda is a local-only Thai dictation and screen-translation app for Apple Silicon Macs. Hold **Fn** to speak, release to type. **⇧⌘3** to select on-screen text and translate TH↔EN. Nothing leaves the machine. English notes are at the bottom.
+> gluu bot (formerly Veda) is a local-only Thai dictation and screen-translation app for Apple Silicon Macs. Hold **Fn** to speak, release to type. **⇧⌘3** to select on-screen text and translate TH↔EN. Nothing leaves the machine. English notes are at the bottom.
 
 ## ต้องมี
 - Mac **Apple Silicon** (M1 ขึ้นไป) · **macOS 15 (Sequoia)** ขึ้นไป
 - พื้นที่ว่างประมาณ 2 GB (แอป 450 MB + โมเดลความแม่นสูง 1.08 GB ที่ดาวน์โหลดครั้งแรก)
 
 ## ติดตั้ง (5 นาที)
-1. ไปที่ **Releases** ทางขวาของหน้านี้ ดาวน์โหลด `Veda.zip` แล้วแตกไฟล์ ลาก `Veda.app` ไปไว้ใน **Applications**
+1. ไปที่ **Releases** ทางขวาของหน้านี้ ดาวน์โหลด `gluu-bot-<เวอร์ชัน>.zip` แล้วแตกไฟล์ ลาก `gluu bot.app` ไปไว้ใน **Applications**
 2. **เปิดครั้งแรก** — macOS จะบอกว่า "ไม่สามารถเปิดได้ เพราะมาจากนักพัฒนาที่ไม่ระบุตัวตน" (แอปยังไม่ได้ผ่าน notarization ของ Apple) ทำตามนี้ครั้งเดียว:
-   - ลองเปิดแอปหนึ่งครั้งให้มันเตือน → ไปที่ **System Settings › Privacy & Security** → เลื่อนลงจะเห็น *"Veda" was blocked* → กด **Open Anyway** → ยืนยันด้วยรหัสผ่านเครื่อง
-   - (macOS 14 หรือเก่ากว่า: คลิกขวาที่ Veda.app → Open → Open ก็ได้)
+   - ลองเปิดแอปหนึ่งครั้งให้มันเตือน → ไปที่ **System Settings › Privacy & Security** → เลื่อนลงจะเห็น *"gluu bot" was blocked* → กด **Open Anyway** → ยืนยันด้วยรหัสผ่านเครื่อง
+   - (macOS 14 หรือเก่ากว่า: คลิกขวาที่ gluu bot.app → Open → Open ก็ได้)
 3. เมื่อเปิดแล้ว หน้าต่าง **ตั้งค่าครั้งแรก · 4 ขั้น** จะเด้งขึ้นเอง ทำตามทีละขั้น:
    1. **ไมโครโฟน** — กด "อนุญาต"
    2. **Accessibility** — เปิดสวิตช์ Veda ใน System Settings (ใช้พิมพ์ข้อความลงช่องที่คุณกำลังใช้ และรับปุ่ม Fn)
@@ -25,7 +25,8 @@ Veda คือแอป macOS สำหรับ**พูดแล้วพิม
 | ทำอะไร | กดอะไร |
 |---|---|
 | พูดแล้วพิมพ์ | **กด Fn ค้าง** พูด แล้ว**ปล่อย** — ข้อความจะพิมพ์ลงช่องที่เคอร์เซอร์อยู่ |
-| สลับ ไทย / อังกฤษ ระหว่างพูด | **Fn + Space** (หรือคลิก TH/EN บนแถบเล็ก ๆ กลางจอล่าง) |
+| สลับ ไทย / อังกฤษ ระหว่างพูด | **Fn + Space** — ป้าย TH/EN เด้งขึ้นเหนือตัวละคร |
+| ตัวละครมุมจอ | อยู่มุมขวาล่าง กลิ้ง เด้ง เปลี่ยนสีหน้าเอง · **คลิกที่ตัว** เปิดตั้งค่า · **Fn + Option** วนโหมดความขี้เล่น · เลือก "แถบดำแบบเดิม" ได้ในตั้งค่า |
 | ยกเลิกที่กำลังพูด | **Esc** |
 | Snap Translate | **⇧⌘3** → ลากครอบข้อความ → คำแปลโผล่ข้างเคอร์เซอร์ · คลิกที่อื่นเพื่อปิด · เปลี่ยนปุ่มได้ในตั้งค่า |
 | คีย์บอร์ดภายนอก | ตั้งปุ่มบนคีย์บอร์ดให้ส่ง **F18** แล้วเปิด "กด F18 ค้างเพื่อพูด" ในตั้งค่า |
@@ -51,7 +52,7 @@ Veda คือแอป macOS สำหรับ**พูดแล้วพิม
 
 ## Build จากซอร์ส
 ```bash
-bash outputs/Veda/scripts/test.sh    # 168 checks
+bash outputs/Veda/scripts/test.sh    # 194 checks
 bash outputs/Veda/scripts/build.sh   # -> outputs/Veda/Veda.zip
 ```
 ต้องมี Xcode Command Line Tools · whisper-server และโมเดล small อยู่ใน `outputs/Veda/runtime/` (ดู `outputs/Veda/runtime/WHISPER-LICENSE`) · บันทึกการทดสอบและการตัดสินใจทั้งหมดอยู่ใน `outputs/Veda/VALIDATION.md`
@@ -59,6 +60,6 @@ bash outputs/Veda/scripts/build.sh   # -> outputs/Veda/Veda.zip
 ---
 
 ### English
-**Veda** is a local-only Thai dictation app for Apple Silicon Macs (macOS 15+). Hold **Fn** to speak and release to type Thai (or English translation) into whatever field has focus; **⇧⌘3** captures on-screen text and translates TH↔EN with on-device Apple Translation. Speech runs through whisper.cpp with `large-v3-q5_0`; nothing is sent off the machine.
+**gluu bot** (formerly Veda) is a local-only Thai dictation app for Apple Silicon Macs (macOS 15+). Hold **Fn** to speak and release to type Thai (or English translation) into whatever field has focus; **⇧⌘3** captures on-screen text and translates TH↔EN with on-device Apple Translation. Speech runs through whisper.cpp with `large-v3-q5_0`; nothing is sent off the machine.
 
-Install: download `Veda.zip` from Releases, move to Applications, allow it once in *System Settings › Privacy & Security › Open Anyway* (the app is ad-hoc signed, not notarized), then follow the 4-step setup card: Microphone, Accessibility, Screen Recording, and the 1.08 GB accurate-model download. Personal vocabulary and approved term corrections live in *Settings › My profile*. MIT licensed; whisper.cpp is MIT.
+Install: download `gluu-bot-<version>.zip` from Releases, move to Applications, allow it once in *System Settings › Privacy & Security › Open Anyway* (the app is ad-hoc signed, not notarized), then follow the 4-step setup card: Microphone, Accessibility, Screen Recording, and the 1.08 GB accurate-model download. Personal vocabulary and approved term corrections live in *Settings › My profile*. MIT licensed; whisper.cpp is MIT.

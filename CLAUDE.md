@@ -3,11 +3,11 @@
 Native macOS local dictation app. User communicates in Thai and expects actual installed fixes, not just passing unit tests. Read outputs/Veda/VALIDATION.md before claiming completion.
 
 ## Workspace
-- App source: outputs/Veda/Sources/{main,Core,AudioCapture,Visuals,SnapTranslate}.swift (build.sh lists them; render harness needs -framework Vision -framework Translation)
+- App source: outputs/Veda/Sources/{main,Core,AudioCapture,Visuals,SnapTranslate,Critter}.swift (build.sh lists them; render harness needs -framework Vision -framework Translation)
 - Build: bash outputs/Veda/scripts/build.sh; tests: bash outputs/Veda/scripts/test.sh. Both pin `-target arm64-apple-macos15.0` (LSMinimumSystemVersion 15.0): this Mac runs macOS 27.0 while the installed SDK defaults to macosx28.0, and an unpinned binary (minos 28) is refused by LaunchServices (-10825). Any ad-hoc swiftc invocation (render harness, probes) must pass the same -target.
-- Installed app: ~/Applications/Veda.app (single canonical installation).
+- Installed app: ~/Applications/gluu bot.app (single canonical installation; display name "gluu bot" since 0.1.34, bundle id still local.veda.dictation, executable still `Veda`, support folder still Application Support/Veda). Old Veda.app is parked in work/build-artifacts.noindex/Veda-renamed.bundle-backup.
 - Install helper: work/install-update.py. Build artifacts are deliberately .bundle-backup under work/build-artifacts.noindex to avoid duplicate launchable apps.
-- Current development version: 0.1.32. Check actual installed Info.plist/diagnostics rather than assuming installed version.
+- Current development version: 0.1.37. Check actual installed Info.plist/diagnostics rather than assuming installed version.
 - Diagnostics: /private/tmp/veda-diagnostics.json. No transcripts there; pendingCount is a count only.
 
 ## Current scope
@@ -105,3 +105,12 @@ Compared Veda's decoding with openai/whisper docs and measured on the user's two
 
 ## Checkpoint — 2026-09-17, 0.1.32: sharing with friends
 Public GitHub repo "whisper-with-veda" (user's choice, MIT) built from a clean single-commit export of the current tree; the dev repo's own history contains unreachable multi-GB blobs and must never be pushed. Personal paths/names scrubbed; PDFs/AGENTS.md untracked. macOS floor lowered to 15; accurate model (large-v3-q5_0) is downloaded in-app with sha256 verification. gh CLI lives in ~/.local/bin (device-flow login by the user). Untested: real download on a fresh Mac, macOS 15/16 runtime. Friends still face Gatekeeper "Open Anyway" and per-update TCC re-grants until the user buys Apple Developer Program.
+
+## Published 2026-09-17 — https://github.com/gnantawat-coder/whisper-with-veda
+Public MIT repo, single clean commit exported from the dev tree (never push the dev repo's own history: it holds unreachable multi-GB blobs). Release v0.1.32 carries Veda-0.1.32.zip (sha256 bbefa971...). To ship an update: build, then `git archive HEAD | tar -x` into work/publish/, commit, push, and `gh release create` with the new zip. gh lives in ~/.local/bin. Unverified by anyone else yet: Gatekeeper Open Anyway flow, the in-app 1.08 GB model download, and running on macOS 15/16.
+
+## Checkpoint — 2026-09-20, 0.1.34 installed (corner character + rename to gluu bot)
+The idle bar can now be a living character in a 260x170 area at the bottom-right (default) — Critter rules in Core (physics, 20 expressions with a face-turn factor, weighted scheduler, rare depth trip with a goodbye face), CritterEngine/CritterView/CritterPanel in Critter.swift. Click-through except on the body; clicking opens settings. Classic bar remains selectable. App display name is now "gluu bot" (bundle id, executable, support folder unchanged on purpose). Unverified on the real screen: timing at 24 px, click-through, Dock-on-side/multi-display placement. Public repo/release not yet updated for 0.1.33–0.1.34.
+
+## Checkpoint — 2026-09-20, 0.1.37 installed and released as gluu bot
+User confirmed the character lives on its own (after the settings-hidden freeze fix in 0.1.36). Added Fn+Option playfulness cycling (DictationShortcut.option, never consumes modifiers) and a playground window (second CritterEngine, radius 44, 416x272) with every move/mood and a simulated Fn hold. Public repo updated and release v0.1.37 published with gluu-bot-0.1.37.zip.

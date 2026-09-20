@@ -83,7 +83,7 @@ final class SnapTranslator: ObservableObject {
         guard CGPreflightScreenCaptureAccess() else {
             CGRequestScreenCaptureAccess()
             lastRun = "screen recording not granted"
-            status = "อนุญาต Screen Recording ให้ Veda ใน System Settings แล้วกด \"เปิด Veda ใหม่\""
+            status = "อนุญาต Screen Recording ให้ gluu bot ใน System Settings แล้วกด \"เปิด gluu bot ใหม่\""
             source = ""; translated = ""; show(); return
         }
         busy = true; lastRun = "capturing"

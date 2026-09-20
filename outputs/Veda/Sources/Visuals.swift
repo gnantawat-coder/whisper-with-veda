@@ -10,7 +10,7 @@ enum WaveformIcon {
             }
             return true
         }
-        image.isTemplate = true; image.accessibilityDescription = "Veda"
+        image.isTemplate = true; image.accessibilityDescription = "gluu bot"
         return image
     }
 }
@@ -35,7 +35,7 @@ enum OverlaySnapshots {
         filledProfile.microphoneAllowed = true; filledProfile.accessibilityAllowed = true
         filledProfile.microphoneStatus = "อนุญาตแล้ว"; filledProfile.accessibilityStatus = "อนุญาตแล้ว"
         filledProfile.profileName = "สมชาย"
-        filledProfile.profileWords = "Veda, Keychron K2 Max, whisper, ถอดเสียง, สมชาย"
+        filledProfile.profileWords = "gluu bot, Keychron K2 Max, whisper, ถอดเสียง, สมชาย"
         filledProfile.calibrationExpected = "เปลี่ยนคำพูดให้เป็นข้อความ"
         filledProfile.calibrationHeard = "เปลี่ยนคําพูดให้เป็นข้อความ"
         filledProfile.calibrationStatus = "ตรวจคำที่ผิด แล้วเพิ่มเฉพาะชื่อหรือศัพท์ที่คุณใช้ในช่องคำศัพท์ส่วนตัว"
@@ -75,6 +75,25 @@ enum OverlaySnapshots {
             if let data = bitmap.representation(using: .png, properties: [:]) { try data.write(to: URL(fileURLWithPath: directory + "/snap.png")) }
         }
         snapWindow.close()
+        // The corner character in the states that carry the most meaning, at real size on a
+        // mid-grey ground so both the black body and the white bubble can be judged.
+        let critterStates: [(String, Critter.Mood, CritterEngine.External, Double, Double)] = [
+            ("critter-normal", .normal, .idle, 0, 0), ("critter-listening", .normal, .listening, 0, 0.8), ("critter-happy", .happy, .idle, 0, 0),
+            ("critter-sad", .sad, .idle, 0, 0), ("critter-shy", .shy, .idle, 0, 0), ("critter-bye", .bye, .idle, 0, 0), ("critter-deep", .curious, .idle, 1, 0)]
+        for (name, mood, ext, z, lv) in critterStates {
+            let engine = CritterEngine()
+            engine.settle(mood: mood, external: ext, z: z, level: lv)
+            let frame = NSRect(origin: .zero, size: engine.panelSize)
+            let window = NSWindow(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false; window.backgroundColor = NSColor(white: 0.55, alpha: 1)
+            let host = NSHostingView(rootView: CritterView(engine: engine).background(Color(white: 0.55))); host.frame = frame; window.contentView = host
+            host.layoutSubtreeIfNeeded(); RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+            if let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+                host.cacheDisplay(in: host.bounds, to: bitmap)
+                if let data = bitmap.representation(using: .png, properties: [:]) { try data.write(to: URL(fileURLWithPath: directory + "/" + name + ".png")) }
+            }
+            window.close()
+        }
         for (name, phase, notice) in scenarios {
             let model = Model(); model.phase = phase; model.level = 0.65
             model.notice = notice; model.overlayVisible = name != "idle"

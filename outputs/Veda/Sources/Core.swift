@@ -89,7 +89,7 @@ struct OverlayPlacement {
 // Fn/F18 is released first. Repeats never toggle twice or restart a recording.
 struct DictationShortcut {
     enum Trigger: Hashable { case fn, f18 }
-    enum Action: Equatable { case begin, end, toggle }
+    enum Action: Equatable { case begin, end, toggle, playfulness }
     private var held: Set<Trigger> = []
     private var switched = false
     private var spaceHeld = false
@@ -101,6 +101,12 @@ struct DictationShortcut {
         guard held.remove(key) != nil, held.isEmpty else { return nil }
         defer { switched = false }
         return switched ? nil : .end
+    }
+    /// Option pressed while Fn/F18 is held. Modifiers are never consumed, so only the action is returned.
+    mutating func option(down: Bool) -> Action? {
+        guard down, !held.isEmpty else { return nil }
+        switched = true
+        return .playfulness
     }
     mutating func space(down: Bool, repeatKey: Bool) -> (consume: Bool, action: Action?) {
         if !down {
@@ -573,5 +579,218 @@ struct ModelDownload {
     static func progressLabel(received: Int64, total: Int64) -> String {
         guard total > 0 else { return String(format: "%.0f MB", Double(received) / 1e6) }
         return String(format: "%.0f / %.0f MB · %d%%", Double(received) / 1e6, Double(total) / 1e6, Int(Double(received) * 100 / Double(total)))
+    }
+}
+
+// MARK: - Critter: the corner character. Pure state and rules; AppKit/SwiftUI draw it.
+// Units are points on screen with y pointing down. Everything that tunes the feel is
+// expressed relative to the body radius so the same numbers work at 44 px and 24 px.
+enum Critter {
+    enum Mood: String, CaseIterable {
+        case normal, bored, thinking, sleepy, asleep, curious, happy, done, shy, sad, wow, startled, worried, dizzy, peek, cold, listening, annoyed, bye, back
+    }
+    struct Eye: Equatable {
+        var w: Double, h: Double, r: Double, dx: Double, dy: Double
+        static func lerp(_ a: Eye, _ b: Eye, _ k: Double) -> Eye {
+            Eye(w: a.w + (b.w - a.w) * k, h: a.h + (b.h - a.h) * k, r: a.r + (b.r - a.r) * k, dx: a.dx + (b.dx - a.dx) * k, dy: a.dy + (b.dy - a.dy) * k)
+        }
+    }
+    /// One pose. `front` is how far the face turns toward the viewer (0 = the reference
+    /// three-quarter pose from the Canva mark, 1 = symmetric, facing you).
+    struct Expression {
+        var front: Double
+        var left: Eye, right: Eye
+        var tilt = 0.0, sx = 1.0, sy = 1.0
+        var arc = false, blush = false, rings = false, shake = false, wow = false, tear = false, spark = false
+        var slowBreath = false, sticky = false
+        var says: [String] = []
+    }
+    static let restLeft = Eye(w: 9, h: 22, r: 22, dx: 0, dy: 0)
+    static let restRight = Eye(w: 9, h: 23, r: 22, dx: 0, dy: 0)
+    // Emotions that read through symmetry face the viewer; ones that read through gaze direction stay turned.
+    static let expressions: [Mood: Expression] = [
+        .normal:   Expression(front: 0, left: restLeft, right: restRight),
+        .bored:    Expression(front: 0, left: Eye(w: 9, h: 11, r: 22, dx: 0, dy: 3), right: Eye(w: 9, h: 11, r: 22, dx: 0, dy: 7), says: ["......", "-_-", "..."]),
+        .thinking: Expression(front: 0.2, left: Eye(w: 9, h: 16, r: 28, dx: 10, dy: -8), right: Eye(w: 9, h: 17, r: 28, dx: 10, dy: -4), says: ["..."]),
+        .sleepy:   Expression(front: 0.3, left: Eye(w: 9, h: 5, r: 16, dx: 0, dy: 6), right: Eye(w: 9, h: 5, r: 16, dx: 0, dy: 8), sy: 0.95, slowBreath: true, says: ["zZ", "zzZ"]),
+        .asleep:   Expression(front: 0.3, left: Eye(w: 9, h: 3, r: 16, dx: 0, dy: 7), right: Eye(w: 9, h: 3, r: 16, dx: 0, dy: 9), sy: 0.93, slowBreath: true, sticky: true, says: ["z z z"]),
+        .curious:  Expression(front: 0.6, left: Eye(w: 9, h: 25, r: -8, dx: 0, dy: -5), right: Eye(w: 9, h: 19, r: 10, dx: 0, dy: 4), tilt: -7, says: ["?", "??", "อืม?"]),
+        .happy:    Expression(front: 1, left: restLeft, right: restRight, arc: true, spark: true, says: ["^^", "^_^", "~♪"]),
+        .done:     Expression(front: 1, left: restLeft, right: restRight, arc: true, spark: true, says: ["^^", "เสร็จ!"]),
+        .shy:      Expression(front: 1, left: Eye(w: 9, h: 14, r: -6, dx: -3, dy: 8), right: Eye(w: 9, h: 14, r: 6, dx: -3, dy: 8), tilt: 4, blush: true, says: ["///", "/////", ">///<"]),
+        .sad:      Expression(front: 1, left: Eye(w: 9, h: 15, r: -14, dx: 0, dy: 5), right: Eye(w: 9, h: 15, r: 14, dx: 0, dy: 5), sy: 0.94, tear: true, says: ["TT", "T_T", ";_;"]),
+        .wow:      Expression(front: 1, left: Eye(w: 12, h: 27, r: -4, dx: 0, dy: -1), right: Eye(w: 12, h: 28, r: 4, dx: 0, dy: -1), sx: 0.94, sy: 1.08, wow: true, says: ["!", "ว้าว"]),
+        .startled: Expression(front: 1, left: Eye(w: 13, h: 28, r: -3, dx: 0, dy: -1), right: Eye(w: 13, h: 29, r: 3, dx: 0, dy: -1), shake: true, says: ["!!"]),
+        .worried:  Expression(front: 1, left: Eye(w: 9, h: 19, r: -12, dx: 0, dy: 2), right: Eye(w: 9, h: 19, r: 12, dx: 0, dy: 2), says: ["…?"]),
+        .dizzy:    Expression(front: 1, left: Eye(w: 9, h: 14, r: 40, dx: 0, dy: 2), right: Eye(w: 9, h: 14, r: -40, dx: 0, dy: 2), says: ["@_@"]),
+        .peek:     Expression(front: 1, left: Eye(w: 9, h: 26, r: -3, dx: 0, dy: -6), right: Eye(w: 9, h: 27, r: 3, dx: 0, dy: -6), sx: 0.9, sy: 1.28, says: ["?"]),
+        .cold:     Expression(front: 0.8, left: Eye(w: 9, h: 16, r: -3, dx: 0, dy: 2), right: Eye(w: 9, h: 16, r: 3, dx: 0, dy: 2), shake: true, says: ["brr"]),
+        .listening: Expression(front: 1, left: Eye(w: 11, h: 26, r: -4, dx: 0, dy: -2), right: Eye(w: 11, h: 27, r: 4, dx: 0, dy: -2), sx: 0.97, sy: 1.03, rings: true),
+        .annoyed:  Expression(front: 1, left: Eye(w: 9, h: 16, r: 34, dx: 0, dy: 1), right: Eye(w: 9, h: 16, r: -34, dx: 0, dy: 1), says: [">_<"]),
+        // No hands: the goodbye is a soft smile, a head tilt, and the words.
+        .bye:      Expression(front: 1, left: restLeft, right: restRight, tilt: 9, arc: true, says: ["บ๊ายบาย~", "ไปแป๊บ", "เดี๋ยวมา"]),
+        .back:     Expression(front: 1, left: restLeft, right: restRight, arc: true, spark: true, says: ["กลับมาแล้ว", "ทาดา~"]),
+    ]
+    /// Eye anchors in the 120-unit face, sliding from the turned pose to the symmetric one.
+    static func anchors(front f: Double) -> (left: (x: Double, y: Double), right: (x: Double, y: Double)) {
+        ((39 + (47 - 39) * f, 42 + (52 - 42) * f), (59 + (73 - 59) * f, 48 + (52 - 48) * f))
+    }
+    /// The body narrows a little half-way through a turn, which is what sells rotation on a flat circle.
+    static func turnSqueeze(front f: Double) -> Double { 1 - 0.07 * sin(f * .pi) }
+
+    /// The blended face on screen; approaches the target expression a little every frame.
+    struct Face {
+        var left = restLeft, right = restRight
+        var front = 0.0, tilt = 0.0, sx = 1.0, sy = 1.0
+        var blush = 0.0, arc = 0.0, rings = 0.0, shake = 0.0, wow = 0.0, tear = 0.0, spark = 0.0
+        mutating func approach(_ e: Expression, breath: Double, extraTilt: Double, k: Double) {
+            left = Eye.lerp(left, e.left, k); right = Eye.lerp(right, e.right, k)
+            front += (e.front - front) * min(1, k * 0.75)
+            tilt += (e.tilt + extraTilt - tilt) * k
+            sx += (e.sx - sx) * k; sy += (e.sy + breath - sy) * k
+            func on(_ v: Bool) -> Double { v ? 1 : 0 }
+            blush += (on(e.blush) * 0.9 - blush) * k
+            arc += (on(e.arc) - arc) * min(1, k * 2); rings += (on(e.rings) - rings) * min(1, k * 1.3)
+            shake += (on(e.shake) - shake) * min(1, k * 2); wow += (on(e.wow) - wow) * min(1, k * 1.5)
+            tear += (on(e.tear) - tear) * min(1, k * 1.3); spark += (on(e.spark) - spark) * min(1, k * 1.5)
+        }
+    }
+
+    // MARK: physics
+    enum Event: Equatable { case landed(Double), wall(Double), ceiling(Double), dizzy, startled, deepArrived, deepReturned }
+    struct Body {
+        var x: Double, y: Double
+        var vx = 0.0, vy = 0.0
+        var z = 0.0, zTarget = 0.0
+        var squash = 1.0, squashV = 0.0
+        var onGround = true
+        var zig = 0, pin = 0, dribble = 0, climb = 0
+        var anticipation = -1.0, hopHeight = 0.0, hopVx = 0.0
+        var deepClock = -1.0
+        let radius: Double
+        init(x: Double, y: Double, radius: Double) { self.x = x; self.y = y; self.radius = radius }
+        /// Everything below was tuned at radius 44; scale keeps the feel at other sizes.
+        var unit: Double { radius / 44 }
+        var scale: Double { 1 - 0.6 * z }
+        var drawRadius: Double { radius * scale }
+    }
+    struct Area {
+        var width: Double, height: Double
+        static let standard = Area(width: 260, height: 170)
+    }
+    /// Floor rises with depth so a far ball sits higher on screen, like a real floor plane.
+    static func ground(_ b: Body, in a: Area) -> Double { a.height - b.drawRadius - b.z * 100 * b.unit }
+    static func minX(_ b: Body) -> Double { b.drawRadius }
+    static func maxX(_ b: Body, in a: Area) -> Double { a.width - b.drawRadius }
+    static func ceiling(_ b: Body) -> Double { b.drawRadius }
+
+    static func roll(_ b: inout Body, in a: Area, rng: () -> Double = { Double.random(in: 0..<1) }) {
+        let dir: Double = b.x > a.width / 2 ? -1 : 1
+        b.vx += dir * (110 + rng() * 120) * b.unit
+    }
+    static func hop(_ b: inout Body, height: Double, vx: Double = 0) { b.anticipation = 0.11; b.hopHeight = height * b.unit; b.hopVx = vx * b.unit }
+    static func dribble(_ b: inout Body) { b.dribble = 5; hop(&b, height: 150) }
+    static func throwUp(_ b: inout Body) { hop(&b, height: 700) }
+    static func pinball(_ b: inout Body, in a: Area, rng: () -> Double = { Double.random(in: 0..<1) }) {
+        b.pin = 7; b.vx = (b.x < a.width / 2 ? 1 : -1) * (420 + rng() * 120) * b.unit; b.vy = -620 * b.unit; b.onGround = false
+    }
+    static func zigzag(_ b: inout Body, in a: Area, rng: () -> Double = { Double.random(in: 0..<1) }) {
+        b.zig = 4; b.vx = (b.x < a.width / 2 ? 1 : -1) * (560 + rng() * 120) * b.unit; b.vy = -220 * b.unit; b.onGround = false
+    }
+    static func wallClimb(_ b: inout Body, in a: Area) {
+        b.climb = 3; let d: Double = b.x < a.width / 2 ? -1 : 1
+        b.vx = -d * 260 * b.unit; hop(&b, height: 380, vx: d * 260)
+    }
+    static func goDeep(_ b: inout Body) { if b.deepClock < 0 { b.deepClock = 0 } }
+    static let deepDuration = 6.6
+    /// Where the body rests when nothing is happening.
+    static func home(in a: Area) -> Double { a.width * 0.68 }
+
+    /// One simulation step. `rng` is injectable so tests are deterministic.
+    static func step(_ b: inout Body, in a: Area, dt: Double, rng: () -> Double = { Double.random(in: 0..<1) }) -> [Event] {
+        var events: [Event] = []
+        let u = b.unit
+        // Depth trip: roll away toward the inner corner, wait, roll back.
+        if b.deepClock >= 0 {
+            b.deepClock += dt
+            let far = 70 * u, home = a.width / 2
+            if b.deepClock < 2.6 { b.zTarget = 1; b.vx += ((far - b.x) * 1.2 - b.vx) * 0.08 }
+            else if b.deepClock < 3.8 { b.zTarget = 1; if b.deepClock - dt < 2.6 { events.append(.deepArrived) } }
+            else if b.deepClock < deepDuration { b.zTarget = 0; b.vx += ((home - b.x) * 1.2 - b.vx) * 0.08 }
+            else { b.deepClock = -1; b.vx *= 0.5; events.append(.deepReturned) }
+        }
+        b.z += (b.zTarget - b.z) * min(1, dt * 1.6)
+        // Anticipation: the body crouches for 110 ms, then the hop is released.
+        if b.anticipation >= 0 {
+            b.anticipation -= dt
+            let ph = 1 - max(0, b.anticipation) / 0.11
+            b.squash = 1 - 0.22 * sin(min(1, ph) * .pi)
+            if b.anticipation < 0 { b.vy = -b.hopHeight; b.vx += b.hopVx; b.onGround = false; b.squash = 1.14 }
+        }
+        b.vy += 1500 * u * dt
+        b.x += b.vx * dt; b.y += b.vy * dt
+        let g = ground(b, in: a), c = ceiling(b), lo = minX(b), hi = maxX(b, in: a)
+        if b.y < c && b.vy < 0 {
+            b.y = c
+            if b.pin > 0 { b.pin -= 1; b.vy = -b.vy * 0.92; b.squash = 0.82 }
+            else { b.vy = -b.vy * 0.7; b.squash = 0.8; if abs(b.vy) > 300 * u { events.append(.startled) } }
+            events.append(.ceiling(abs(b.vy)))
+        }
+        for atWall in [b.x < lo, b.x > hi] where atWall {
+            b.x = b.x < lo ? lo : hi
+            let speed = abs(b.vx)
+            if b.pin > 0 { b.pin -= 1; b.vx = -b.vx * 0.92; b.squash = 0.78; if b.pin == 0 { events.append(.dizzy) } }
+            else if b.climb > 0 { b.climb -= 1; b.vx = -b.vx * 0.5; b.vy = -(300 + rng() * 80) * u; b.squash = 0.8 }
+            else if b.zig > 0 { b.zig -= 1; b.vx = -b.vx * 0.94; b.vy = -(200 + rng() * 60) * u; b.squash = 0.76; if b.zig == 0 { events.append(.startled) } }
+            else { b.vx = -b.vx * 0.6; b.squash = 0.82; if speed > 250 * u { events.append(.startled) } }
+            events.append(.wall(speed))
+        }
+        if b.y >= g {
+            b.y = g; b.zig = 0; b.climb = 0
+            if !b.onGround && b.vy > 60 * u {
+                let v = b.vy
+                if b.pin > 0 { b.pin -= 1; b.vy = -v * 0.92; b.squash = 1 - min(0.3, v / (1600 * u)) }
+                else {
+                    b.squash = 1 - min(0.3, v / (1600 * u)); b.squashV = 0
+                    b.vy = -v * 0.55; if abs(b.vy) < 70 * u { b.vy = 0 }
+                    if b.dribble > 0 { b.dribble -= 1; b.vy = -(120 + Double(b.dribble) * 45) * u }
+                }
+                events.append(.landed(v))
+            } else { b.vy = 0 }
+            b.onGround = b.vy == 0
+        } else { b.onGround = false }
+        b.vx *= b.onGround ? 0.965 : 0.996
+        if abs(b.vx) < 4 * u { b.vx = 0 }
+        // Squash returns through a light spring so a landing wobbles instead of snapping.
+        b.squashV += (1 - b.squash) * 0.35; b.squashV *= 0.72; b.squash += b.squashV
+        return events
+    }
+
+    // MARK: scheduling
+    enum Move: String, CaseIterable { case roll, hop, dribble, throwUp, pinball, wallClimb, zigzag, peek, shiver, sway, deep }
+    struct Scheduler {
+        /// 0 quiet, 1 normal, 2 playful — seconds between actions.
+        var playfulness = 1
+        static let moveGap: [(Double, Double)] = [(7, 14), (3.5, 7.5), (1.8, 4)]
+        static let moodGap: [(Double, Double)] = [(9, 18), (4.5, 9.5), (2.5, 5.5)]
+        static let moveWeights: [(Move, Double)] = [(.roll, 22), (.hop, 16), (.dribble, 10), (.throwUp, 8), (.pinball, 5), (.wallClimb, 6), (.zigzag, 7), (.peek, 8), (.shiver, 4), (.sway, 8), (.deep, 2)]
+        static let deepMinimumGap: Double = 600
+        var lastDeepAt: Double = -.greatestFiniteMagnitude
+        /// The depth trip is the rarest move: low weight, and never twice within ten minutes.
+        func pickMove(_ roll: Double, now: Double) -> Move {
+            let m = pickMove(roll)
+            return m == .deep && now - lastDeepAt < Scheduler.deepMinimumGap ? .roll : m
+        }
+        static let moodWeights: [(Mood, Double)] = [(.normal, 40), (.shy, 10), (.curious, 12), (.happy, 10), (.bored, 14), (.sleepy, 8), (.wow, 6)]
+        static func weighted<T>(_ table: [(T, Double)], _ roll: Double) -> T {
+            let total = table.reduce(0) { $0 + $1.1 }
+            var acc = 0.0
+            for (item, w) in table { acc += w; if roll * total < acc { return item } }
+            return table[table.count - 1].0
+        }
+        func nextMoveDelay(_ roll: Double) -> Double { let g = Scheduler.moveGap[max(0, min(2, playfulness))]; return g.0 + (g.1 - g.0) * roll }
+        func nextMoodDelay(_ roll: Double) -> Double { let g = Scheduler.moodGap[max(0, min(2, playfulness))]; return g.0 + (g.1 - g.0) * roll }
+        func pickMove(_ roll: Double) -> Move { Scheduler.weighted(Scheduler.moveWeights, roll) }
+        func pickMood(_ roll: Double) -> Mood { Scheduler.weighted(Scheduler.moodWeights, roll) }
     }
 }
