@@ -1,0 +1,11 @@
+# Private recordings, scratch, model downloads, build artifacts
+work/
+outputs/Veda/Veda.zip
+outputs/Veda/Veda.app/
+# whisper.cpp runtime: binary and models are fetched, not versioned (see README)
+outputs/Veda/runtime/*.bin
+outputs/Veda/runtime/whisper-server
+.DS_Store
+# Personal files that landed at the repo root
+*.pdf
+AGENTS.md

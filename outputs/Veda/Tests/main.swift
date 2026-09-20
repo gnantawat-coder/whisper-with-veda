@@ -342,7 +342,7 @@ do {
     check(inflate(3.7).scale < 0.5 && inflate(3.7).pacifier > 0.99 && inflate(7.1).scale > 0.99 && inflate(7.1).pacifier == 0, "it is reborn small with a pacifier and grows back to full size")
     check(inflate(7.2).done && !inflate(7.1).done, "the scene ends exactly at its duration")
     let strike = Critter.sceneFrame(.lightning, t: 0.6 + 1.0 / 120)
-    check(strike.bolt == 1 && strike.charred == 1 && Critter.sceneFrame(.lightning, t: 2.0).smoke > 0 && Critter.sceneFrame(.lightning, t: 4.1).charred < 0.2, "lightning flashes, chars the body, smokes, then heals")
+    check(strike.bolt == 1 && strike.charred == 1 && Critter.sceneFrame(.lightning, t: 2.0).smoke > 0 && Critter.sceneFrame(.lightning, t: 5.5).charred < 0.2, "lightning flashes, chars the body, smokes, then heals")
     check(Critter.sceneFrame(.rainUmbrella, t: 3).umbrella && Critter.sceneFrame(.rainUmbrella, t: 3).rain && !Critter.sceneFrame(.rain, t: 3).umbrella && Critter.sceneFrame(.rain, t: 3).mood == .cold, "rain with an umbrella stays dry; without it the body is cold")
     check(Critter.sceneFrame(.rainUmbrella, t: 3).driveVx == nil && Critter.sceneFrame(.rain, t: 1.6).driveVx != nil && Critter.sceneFrame(.rain, t: 1.6).driveVx! > 0 && Critter.sceneFrame(.rain, t: 3.6).driveVx! < 0, "without an umbrella it rolls right, then left")
     let up = Critter.sceneFrame(.balloon, t: 5.0), fall = Critter.sceneFrame(.balloon, t: 5.4 + 1.0 / 120)
@@ -357,12 +357,51 @@ do {
     check(Critter.allowsBubble(.language, quiet: true) && Critter.allowsBubble(.thinking, quiet: true) && !Critter.allowsBubble(.mood, quiet: true) && !Critter.allowsBubble(.scene, quiet: true) && Critter.allowsBubble(.mood, quiet: false), "quiet mode keeps only state-change bubbles")
     let sch = Critter.Scheduler(playfulness: 1)
     check(sch.nextSceneDelay(0) == 90 && Critter.Scheduler(playfulness: 0).nextSceneDelay(1) == 900 && Critter.Scheduler(playfulness: 2).nextSceneDelay(0) == 40, "scenes are 1.5–3 min apart normally, rarer when quiet, under 1.5 min when playful")
-    check(sch.pickScene(0) == .inflate && sch.pickScene(0.999) == .ninja, "scene picks span the table")
+    check(sch.pickScene(0) == .inflate && sch.pickScene(0.999) == .football, "scene picks span the table")
+    let fbG = { (t: Double) in Critter.sceneFrame(.football, t: t, seed: 0, from: 0.3) }, fbM = { (t: Double) in Critter.sceneFrame(.football, t: t, seed: 4, from: 0.3) }
+    check(fbG(1.1).bootSwing > 0.3 && fbG(1.25 + 1.0 / 120).pop && fbG(1.25 + 1.0 / 120).say == "โอ้ย!!" && fbG(2.0).xFrac! > 0.5 && (fbG(2.0).lift ?? 0) > 1.5 && (fbG(2.0).depth ?? 0) > 0.4 && (fbG(2.0).depth ?? 0) < 0.6, "the boot swings, it yells, and flies deep toward the far goal")
+    check(fbG(3.2).scoreText == "GOAL!!" && fbG(3.2).confetti == 1 && fbG(4.0).mood == .happy && fbG(3.2).netHit > 0 && fbG(4.0).depth == 1 && fbG(4.0).inNet && !fbG(7.0).inNet && fbG(7.7).depth! < 0.1, "seed 0 scores far away: confetti, net wobble, joy, then rolls back to us")
+    check(fbM(3.2).scoreText == "ไม่เข้า…" && fbM(3.2).missCloud == 1 && fbM(3.0).driveVx! < 0 && fbM(4.0).mood == .sad && fbM(4.0).depth! < 0.8 && fbM(7.7).depth! < 0.1, "seed 4 misses: bounces off the far post, sad, then comes back")
+    check(fbG(1.3).xFrac! > 0.29 && fbG(1.3).xFrac! < 0.35, "the flight starts from where it stood")
+    let bl = { (t: Double) in Critter.sceneFrame(.bulb, t: t) }
+    check(bl(0.8).lampFinger > 0.5 && !bl(0.8).lampOn && bl(2.0).lampOn && bl(2.0).glow == 1 && bl(2.0).mood == .annoyed && bl(5.5).glow < 0.1 && !bl(5.5).lampOn, "the finger flips the switch, it glows, then the switch goes off")
+    check(Critter.sceneFrame(.catWalk, t: 3).wall && Critter.sceneFrame(.toilet, t: 4.2).lift == 0.85, "the cat walks a wall; on the toilet it sits up on the seat")
+    check(Critter.sceneFrame(.catWalk, t: 0).catFrac! > 1 && Critter.sceneFrame(.catWalk, t: 6.9).catFrac! < 0 && Critter.sceneFrame(.catWalk, t: 3).catMeow, "the cat crosses right to left and meows in the middle")
+    let cp = { (t: Double) in Critter.sceneFrame(.catPlay, t: t) }
+    check(cp(1.4).catPaw > 0 && cp(2.5).driveVx! < 0 && cp(4.2).catDir == 1 && cp(5.5).driveVx! > 0 && cp(9).catSit && cp(9).mood == .happy, "batted left, chased, batted back, the cat sits")
+    let pp2 = { (t: Double) in Critter.sceneFrame(.pingpong, t: t) }, tl2 = { (t: Double) in Critter.sceneFrame(.toilet, t: t) }
+    check(pp2(2.0).xFrac != nil && pp2(0.6 + 0.35).xFrac! > 0.4 && pp2(0.6 + 0.35).xFrac! < 0.6 && pp2(0.6 + 0.69).xFrac! > 0.85 && pp2(0.6 + 1.39).xFrac! < 0.15, "ping-pong carries it end to end of the table each stroke")
+    check(tl2(5.0).pin && !tl2(1.0).pin && tl2(8.0).toilet, "the toilet stays where it was, even after it bolts")
+    let tl = { (t: Double) in Critter.sceneFrame(.toilet, t: t) }
+    check(tl(2.0).hidden && tl(2.0).room == 1 && tl(4.2).forklift != nil && tl(4.2).roomLift > 0.4 && tl(4.2).toilet && tl(4.2).newspaper && tl(4.2).mood == .zen, "inside the cabin, then the forklift lifts it off mid-newspaper")
+    check(tl(5.0).mood == .startled && tl(6.0).driveVx! < 0 && tl(6.0).mood == .shy && tl(8.0).room == 0, "startled, bolts left, the cabin is gone")
+    let pp = { (t: Double) in Critter.sceneFrame(.pingpong, t: t) }
+    check(pp(0.8).table && (pp(0.8).lift ?? 0) > 0.9 && pp(1.15).xFrac! > 0.6 && pp(1.85).xFrac! < 0.4 && pp(1.3 + 1.0 / 120).pop && pp(5.5).mood == .annoyed && !pp(7.0).table && Critter.sceneDuration(.pingpong) < 8, "batted left and right on the table, slower and shorter, until it protests")
+    let md = { (t: Double) in Critter.sceneFrame(.meadow, t: t) }
+    check(md(1).grass && md(1).driveVx == 0.9 && md(4.5).driveVx == 4.6 && md(6).driveVx == -4.6 && md(9).mood == .happy, "slow roll, then fast both ways")
+    check(Critter.sceneFrame(.lightning, t: 2.7).soul > 0.4 && Critter.sceneFrame(.lightning, t: 2.7).soul < 0.6 && Critter.sceneFrame(.lightning, t: 4.3).soul == 0 && Critter.sceneFrame(.lightning, t: 5.5).charred < 0.05, "lightning: the soul flies its loop and is back before the soot wears off")
+    let sn = { (t: Double) in Critter.sceneFrame(.snack, t: t) }
+    check(sn(1.0).bag == 1 && sn(1.0).driveVx! > 0 && sn(2.5).chew == 1 && sn(2.5).bag < 0.6 && sn(4.4).scale > 1.35 && sn(6.5).scale < 1.3 && sn(6.5).scale > 1.1 && sn(9).scale == 1, "eats the snack, grows, rolls it off")
+    check(Critter.sceneFrame(.pat, t: 1).hand == 1 && Critter.sceneFrame(.pat, t: 1).mood == .loved && Critter.sceneFrame(.chin, t: 1).hand == 2 && Critter.sceneFrame(.chin, t: 1).mood == .zen, "pat and chin scratch show the hand and the right face")
+    check(Critter.sceneFrame(.skateboard, t: 2.7).spinDeg > 100 && Critter.sceneFrame(.skateboard, t: 2.4 + 1.0 / 120).hopNow != nil && Critter.sceneFrame(.skateboard, t: 4).board, "kickflip mid-ride")
+    check(Critter.sceneFrame(.kite, t: 5).kite == 1 && Critter.sceneFrame(.kite, t: 8.4).kite == 0, "the kite goes up and is reeled in")
+    check(Critter.Care.rps(user: 0, bot: 2) == 1 && Critter.Care.rps(user: 1, bot: 1) == 0 && Critter.Care.rps(user: 2, bot: 0) == -1 && Critter.Care.rps(user: 1, bot: 0) == 1, "rock beats scissors, paper beats rock, scissors beat paper")
+    let cr = { (t: Double) in Critter.sceneFrame(.crush, t: t) }
+    check(cr(1).girl == 1 && cr(1).driveVx! > 0 && cr(3).mood == .shy && cr(5).driveVx! < 0 && cr(5).mood == .shy && cr(7.4).girl < 0.3, "meets the girl, blushes, rolls away the other way")
+    let pk = { (t: Double) in Critter.sceneFrame(.pancake, t: t) }
+    check(pk(3.5).pump > 0.4 && pk(3.5).flat == 1 && pk(4.0).pumpStroke > 0.5 && pk(4.3).flat < 0.8 && pk(4.3).flat > 0.6 && pk(5.9).flat == 0 && pk(6.7).pump < 0.1, "the pump arrives, each stroke rounds it a quarter, then leaves")
+    check(Critter.sceneFrame(.ninja, t: 5.0).driveVx != nil && Critter.sceneFrame(.ninja, t: 5.0).hopNow == nil, "it rolls out of the sliding door instead of hopping")
+    let rk = { (t: Double) in Critter.sceneFrame(.roadkill, t: t) }
+    check(rk(3.2).carX != nil && rk(3.2).carX! > 0 && rk(3.5 + 1.0 / 120).pop && rk(3.8).flat == 1 && rk(3.8).carX! < 0, "the car comes from the right and flattens it")
+    check(rk(6.0).soul > 0.45 && rk(6.0).soul < 0.55 && rk(7.7).soul > 0.95 && rk(8.0).soul == 0 && rk(9.0).flat == 0 && rk(9.0).mood == .happy, "the soul flies a full loop, comes back, and it pops back — nothing dies")
+    check(Critter.sceneFrame(.clone, t: 3, seed: 6).chosen == 2 && Critter.sceneFrame(.clone, t: 3, seed: -1).chosen == 3 && Critter.sceneFrame(.clone, t: 3).hidden && Critter.sceneFrame(.clone, t: 3).clones == 1 && Critter.sceneFrame(.clone, t: 5.6).cloneVanish > 0 && !Critter.sceneFrame(.clone, t: 7).hidden, "four clones, the chosen one comes from the seed, the rest vanish")
+    let bc = { (t: Double) in Critter.sceneFrame(.beach, t: t) }
+    check(bc(0.5).beach && bc(0.5).driveVx == 1.6 && bc(1.5).driveVx == 0 && bc(5).bench && bc(5).lookUp && (bc(5).lift ?? 0) > 0.5 && bc(10).lift == nil, "rolls to the beach and lies on the bench looking at the sky")
     check(sch.weatherLength(1, kind: .sunny) == 90 && sch.weatherLength(1, kind: .heat) == 90 && sch.weatherLength(1, kind: .rain) == 480, "sun and heat are short; rain keeps the long range")
     let nj = { (t: Double) in Critter.sceneFrame(.ninja, t: t) }
     check(nj(0.65).bomb > 0.4 && nj(0.65).bomb < 0.6 && !nj(0.65).hidden, "the bomb is mid-fall before the cloud")
     check(nj(1.3).smokeCloud == 1 && nj(1.3).hidden && nj(3.0).hidden && nj(3.0).smokeCloud == 0, "the cloud bursts and it is gone after the smoke clears")
-    check(nj(4.5).door == 1 && abs(nj(4.5).doorOpen - 0.5) < 0.01 && nj(4.5).hidden && !nj(5.0).hidden && nj(4.8 + 1.0 / 120).hopNow != nil && nj(7.1).door < 0.1, "the door appears, opens, it hops out, and the door goes away")
+    check(nj(4.5).door == 1 && abs(nj(4.5).doorOpen - 0.5) < 0.01 && nj(4.5).hidden && !nj(5.0).hidden && nj(5.0).driveVx != nil && nj(7.1).door < 0.1, "the door appears, slides open, it rolls out, and the door goes away")
 }
 print("Scene checks passed; total \(checks)")
 
@@ -377,8 +416,7 @@ do {
     check(Critter.sceneFrame(.box, t: 2.0).box == 1 && Critter.sceneFrame(.box, t: 2.0).mood == .peek && Critter.sceneFrame(.box, t: 6.0).box == 0, "boxed with eyes peeking, then out")
     check(Critter.sceneFrame(.melt, t: 3.0).melt == 1 && Critter.sceneFrame(.melt, t: 5.9).melt == 0, "melts flat then reforms")
     check(Critter.sceneFrame(.freeze, t: 2.0).ice == 1 && Critter.sceneFrame(.freeze, t: 4.0 + 1.0 / 120).burst && Critter.sceneFrame(.freeze, t: 5.0).ice == 0, "frozen solid, then cracks out")
-    check(Critter.sceneFrame(.trip, t: 0.5).driveVx == 3.2 && Critter.sceneFrame(.trip, t: 1.2).spinDeg > 90 && Critter.sceneFrame(.trip, t: 2.0).mood == .dizzy, "rolls, trips into a flip, ends dizzy")
-    check(Critter.Scene.allCases.allSatisfy { sc in stride(from: 0.0, through: Critter.sceneDuration(sc), by: 0.05).allSatisfy { !Critter.sceneFrame(sc, t: $0).hidden || sc == .inflate || sc == .manhole || sc == .dash || sc == .ninja } }, "only inflate, manhole, dash and ninja ever hide the body")
+    check(Critter.Scene.allCases.allSatisfy { sc in stride(from: 0.0, through: Critter.sceneDuration(sc), by: 0.05).allSatisfy { !Critter.sceneFrame(sc, t: $0).hidden || sc == .inflate || sc == .manhole || sc == .dash || sc == .ninja || sc == .clone || sc == .toilet } }, "only inflate, manhole, dash, ninja, clone and toilet ever hide the body")
     let fl = { (t: Double) in Critter.sceneFrame(.flood, t: t) }
     check(fl(2.0).pour && fl(2.0).water > 1 && fl(2.0).water < 2 && fl(4.0).water == 2.4 && fl(4.0).lift == nil && fl(4.0).bubbles, "the glass pours, the water covers it, and it sinks first")
     check((fl(7.4).lift ?? 0) > 1.5 && fl(8.5).water < 2.4 && fl(10.5).mood == .pant && fl(10.5).water == 0 && fl(10.5).glass == 0, "it swims up, the water drains, and it pants on land")
@@ -388,7 +426,7 @@ do {
     check(dn(1.0).disco && dn(1.0).notes && dn(1.0).mood == .groove && dn(0.5 + 1.0 / 120).hopNow != nil && dn(4.3).spinDeg > 100, "dancing: disco floor, note eyes, hops on the beat, one spin")
     let spin = Critter.sceneFrame(.tornado, t: 1.5)
     check(spin.spin == 1 && spin.dust && spin.driveVx != nil && Critter.sceneFrame(.tornado, t: 3.5).spin == 0, "the tornado spins, moves, then stops dizzy")
-    check((Critter.sceneFrame(.pancake, t: 0.45).anvil ?? 0) > 0.4 && Critter.sceneFrame(.pancake, t: 2.0).flat == 1 && Critter.sceneFrame(.pancake, t: 4.55).flat < 0.05, "the anvil falls, flattens the body, and it re-inflates")
+    check((Critter.sceneFrame(.pancake, t: 0.45).anvil ?? 0) > 0.4 && Critter.sceneFrame(.pancake, t: 2.0).flat == 1 && Critter.sceneFrame(.pancake, t: 6.5).flat < 0.05, "the anvil falls, flattens the body, and it re-inflates")
     check(Critter.sceneFrame(.rubber, t: 1.0).stretch > 0 && Critter.sceneFrame(.rubber, t: 1.0).mood == .laugh && Critter.sceneFrame(.rubber, t: 4.9).stretch == 0, "rubber body stretches while laughing, then relaxes")
     check(Critter.sceneFrame(.dash, t: 0.65).dashX > 3 && Critter.sceneFrame(.dash, t: 1.5).hidden && Critter.sceneFrame(.dash, t: 2.6).dashX < 0 && Critter.sceneFrame(.dash, t: 3.5).dashX == 0, "the dash leaves right, is gone, and returns from the left")
     check(Critter.sceneFrame(.eat, t: 2.0).prop && Critter.sceneFrame(.eat, t: 2.0).chew == 1 && Critter.sceneFrame(.eat, t: 4.5).mood == .full, "eating shows the food, chews, ends full")
@@ -438,11 +476,25 @@ do {
     check(dec.fullness == 20 && dec.fun == 20 && dec.energy == 60 && dec.bond == 50, "ten hours: hungry and bored, bond untouched until neglect")
     Care.decay(&dec, hours: 2)
     check(dec.bond < 50 && dec.bond > 49.5, "neglect wears bond down slowly")
+    check(Care.want(Care.State(fullness: 10), now: t0)!.0 == .hungry && Care.want(Care.State(bond: 20, fun: 10), now: t0)!.0 == .sulky && Care.want(Care.State(bond: 20, lastStrokedAt: t0 - 4 * 3600), now: t0)!.0 == .shy && Care.want(Care.State(bond: 20, lastStrokedAt: t0 - 60), now: t0) == nil, "wants: food, then play, then a cuddle after three hours")
     check(Care.need(dec) == .hungry && Care.need(Care.State(bond: 20, fun: 10)) == .sulky && Care.need(Care.State(energy: 10)) == .sleepy && Care.need(Care.State()) == nil, "needs show in a fixed order: hunger, sleep, sulk")
     check(Care.level(0) == 0 && Care.level(15) == 1 && Care.level(84.9) == 3 && Care.level(100) == 4 && Care.title(60) == "เพื่อนซี้", "levels follow the bond floors")
     var big = Care.State(bond: 99); _ = Care.gain(&big, 5)
     check(big.bond <= 100 && big.bond > 99, "bond never passes 100")
     let data = try! JSONEncoder().encode(st); let back = try! JSONDecoder().decode(Care.State.self, from: data)
     check(back == st, "care state round-trips through JSON")
+    var g = Care.State(); let go = Care.apply(.game(1), to: &g, now: t0)
+    check(go.mood == .sad && g.fun == 66 && go.bondGained > 0 && Care.apply(.game(-1), to: &g, now: t0 + 1).mood == .laugh, "losing makes it sad, winning makes it laugh")
+    var sk = Care.State(fullness: 50); let so = Care.apply(.snack, to: &sk, now: t0)
+    check(so.scene == .snack && sk.fullness == 72 && Care.apply(.pat, to: &sk, now: t0).scene == .pat && Care.apply(.chin, to: &sk, now: t0).scene == .chin, "snack, pat and chin map to their scenes")
+}
+do {
+    let k = TalkKey(keyCode: 61)
+    check(k.isModifier && k.label == "⌥ ขวา" && k.modifierMask == 1 << 19 && TalkKey(stored: k.stored) == k, "a modifier talk key knows its flag and round-trips")
+    check(!TalkKey(keyCode: 105).isModifier && TalkKey(keyCode: 105).label == "F13" && TalkKey(keyCode: 105).modifierMask == nil, "F13 is a plain key")
+    check(!TalkKey.allowed(63) && !TalkKey.allowed(49) && !TalkKey.allowed(53) && !TalkKey.allowed(57) && TalkKey.allowed(61) && TalkKey.allowed(79), "Fn, Space, Esc and caps lock cannot be the talk key")
+    check(TalkKey(stored: "x") == nil && TalkKey(stored: "-1") == nil, "bad stored values are rejected")
+    var d = DictationShortcut()
+    check(d.trigger(.custom, down: true) == .begin && d.trigger(.custom, down: true) == nil && d.trigger(.custom, down: false) == .end, "the custom key behaves like Fn: begin on press, ignore repeats, end on release")
 }
 print("Care/weather checks passed; total \(checks)")

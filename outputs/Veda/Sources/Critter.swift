@@ -17,12 +17,41 @@ final class CritterEngine: ObservableObject {
         var sky = Critter.Sky(), prop = ""
         var pixelEyes = false, mood: Critter.Mood = .normal, external: External = .idle
         var bird = 0.0, birdLeave = 0.0   // 0 none; bird 0→1 flying in then perched; birdLeave 0→1 flying off
+        var anchorX = 0.0                 // panel x where the body stood when the scene pinned its props
         var burstAge = -1.0, popAge = -1.0, dropletAge = -1.0   // seconds since the one-tick effects fired; -1 = never
     }
     @Published private(set) var snapshot: Snapshot
     @Published var bubble: String?
     @Published var langLabel: String?
-    var onTap: (() -> Void)?
+    var onTap: (() -> Void)?             // "เมนู" in the click menu: opens settings
+    enum Menu { case closed, root, play, rps }
+    @Published var menu: Menu = .closed
+    private var menuOpenedAt = -1.0, pointerOutsideSince = -1.0
+    static let menuSizes: [Menu: CGSize] = [.root: CGSize(width: 214, height: 30), .play: CGSize(width: 300, height: 30), .rps: CGSize(width: 150, height: 30)]
+    /// Where the click menu sits (panel coordinates): just above the body, kept inside the panel.
+    func menuRect() -> CGRect {
+        guard menu != .closed, let size = CritterEngine.menuSizes[menu] else { return .zero }
+        let c = center()
+        let x = min(panelSize.width - size.width / 2 - 4, max(size.width / 2 + 4, c.x))
+        let y = max(size.height / 2 + 2, c.y - body.drawRadius * 1.25 - 26)
+        return CGRect(x: x - size.width / 2, y: y - size.height / 2, width: size.width, height: size.height)
+    }
+    func toggleMenu() { menu = menu == .closed ? .root : .closed; menuOpenedAt = clock; if menu != .closed { bubble = nil; bubbleUntil = -1 } }
+    func closeMenu() { menu = .closed }
+    func choose(_ m: Menu) { menu = m; menuOpenedAt = clock }
+    /// Rock-paper-scissors against the user's pick (0 rock, 1 paper, 2 scissors): count in, reveal, react.
+    func playRPS(user: Int) {
+        closeMenu()
+        let bot = Int.random(in: 0..<3), result = Critter.Care.rps(user: user, bot: bot)
+        say(["เป่า… ยิ้ง… ฉุบ!"], for: 1.0, kind: .care); setMood(.curious, hold: 1.0, speak: false)
+        Critter.hop(&body, height: 120)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            guard let self else { return }
+            Critter.hop(&self.body, height: 200)
+            let o = self.act(.game(result))
+            self.say([Critter.Care.rpsEmoji[bot] + " " + (o.say ?? "")], for: 2.6, kind: .care)
+        }
+    }
 
     let area: Critter.Area
     let inset = CGSize(width: 20, height: 64)     // room for the bubble above and a little slack each side
@@ -49,6 +78,9 @@ final class CritterEngine: ObservableObject {
     private(set) var scene: Critter.Scene?
     private var sceneStartAt = 0.0, nextSceneAt = 0.0, burstAt = -1.0, popAt = -1.0, dropletAt = -1.0, liftBaseX = 0.0
     private var sceneFrame: Critter.SceneFrame?
+    private var sceneSeed = 0
+    private var sceneAnchorX: Double? = nil
+    private var sceneStartFrac = 0.5
     var external: External = .idle
     var level = 0.0
     var paused = false                  // offscreen previews only
@@ -183,19 +215,20 @@ final class CritterEngine: ObservableObject {
         }
         if clock > needAt, external == .idle, scene == nil, mood == .normal, !paused {
             needAt = clock + 45
-            if let need = Critter.Care.need(care) { setMood(need, hold: 3) }
+            if let (m, words) = Critter.Care.want(care, now: t) { setMood(m, hold: 3, speak: false); say([words], for: 2.8, kind: .care) }
         }
     }
     /// Start a set piece. Physics keeps running underneath; the frame tells the painter what to add.
     func perform(scene s: Critter.Scene) {
-        scene = s; sceneStartAt = clock; liftBaseX = body.x
-        sceneFrame = Critter.sceneFrame(s, t: 0)
+        scene = s; sceneStartAt = clock; liftBaseX = body.x; sceneSeed = Int.random(in: 0..<1000); sceneAnchorX = nil
+        let lo = Critter.minX(body), hi = Critter.maxX(body, in: area); sceneStartFrac = hi > lo ? (body.x - lo) / (hi - lo) : 0.5
+        sceneFrame = Critter.sceneFrame(s, t: 0, seed: sceneSeed, from: sceneStartFrac)
         bubble = nil; bubbleUntil = -1
     }
     private func runScene(dt: Double) {
         guard let s = scene else { return }
-        let fr = Critter.sceneFrame(s, t: clock - sceneStartAt, dt: dt)
-        if fr.done { scene = nil; sceneFrame = nil; setMood(.normal); return }
+        let fr = Critter.sceneFrame(s, t: clock - sceneStartAt, dt: dt, seed: sceneSeed, from: sceneStartFrac)
+        if fr.done { scene = nil; sceneFrame = nil; body.zTarget = 0; setMood(.normal); return }
         sceneFrame = fr
         if let m = fr.mood, m != mood { setMood(m, hold: 1e9, speak: false) }
         if let w = fr.say { say([w], for: 1.6, kind: .scene) }
@@ -204,10 +237,14 @@ final class CritterEngine: ObservableObject {
         if fr.droplets { dropletAt = clock; Critter.hop(&body, height: 50) }
         if let v = fr.driveVx { body.vx = v * body.radius }
         if let h = fr.hopNow { Critter.hop(&body, height: h) }
+        if fr.pin && sceneAnchorX == nil { sceneAnchorX = body.x }
+        if let xf = fr.xFrac { let lo = Critter.minX(body), hi = Critter.maxX(body, in: area); body.x = lo + (hi - lo) * xf; body.vx = 0 }
+        if let d = fr.depth { body.zTarget = d }
         if let lift = fr.lift {
             // Hanging from the balloon: the string sets the height, the wind sets the drift.
-            body.y = Critter.ground(body, in: area) - lift * body.radius; body.vy = 0; body.vx = 0
-            body.x = min(Critter.maxX(body, in: area), max(Critter.minX(body), liftBaseX + sin(clock * 1.2) * 12 * body.unit))
+            body.y = Critter.ground(body, in: area) - lift * body.radius; body.vy = 0
+            if s == .balloon { body.vx = 0; body.x = min(Critter.maxX(body, in: area), max(Critter.minX(body), liftBaseX + sin(clock * 1.2) * 12 * body.unit)) }
+            else if fr.driveVx == nil && fr.xFrac == nil { body.vx = 0 }
         }
     }
     func perform(_ move: Critter.Move) {
@@ -236,6 +273,12 @@ final class CritterEngine: ObservableObject {
         let dt = min(0.033, now - lastTick); lastTick = now; clock += dt
         let still = reduceMotion
         pointerInside = mouseInPanel?() != nil
+        if menu != .closed {
+            if mouseAnywhere?() == nil || !(mouseAnywhere.map { p -> Bool in guard let q = p() else { return false }; return q.x >= -30 && q.y >= -30 && q.x <= panelSize.width + 30 && q.y <= panelSize.height + 30 } ?? true) {
+                if pointerOutsideSince < 0 { pointerOutsideSince = clock } else if clock - pointerOutsideSince > 1.5 { closeMenu() }
+            } else { pointerOutsideSince = -1 }
+            if clock - menuOpenedAt > 12 || external != .idle { closeMenu() }
+        }
         if let p = eyeTracking ? (mouseAnywhere?() ?? mouseInPanel?()) : mouseInPanel?() {
             let c = center()
             let dx = p.x - c.x, dy = p.y - c.y, d = max(1, hypot(dx, dy)), m = min(1, d / (220 * body.unit))
@@ -286,7 +329,8 @@ final class CritterEngine: ObservableObject {
             if let lift = sceneFrame?.lift { body.y = Critter.ground(body, in: area) - lift * body.radius; body.vy = 0 }
         }
         // Gaze: follow the pointer, otherwise glance around now and then.
-        let tracking = eyeTracking ? (mouseAnywhere?() != nil || pointerInside) : pointerInside
+        var tracking = eyeTracking ? (mouseAnywhere?() != nil || pointerInside) : pointerInside
+        if sceneFrame?.lookUp == true { want = CGPoint(x: 0.15, y: -1); tracking = true }
         if !tracking && !still && clock > saccadeAt { want = CGPoint(x: Double.random(in: -0.3...0.3), y: Double.random(in: -0.2...0.2)); saccadeAt = clock + 1.8 + Double.random(in: 0..<2.6) }
         let k = still ? 1 : 0.1
         look.x += (want.x - look.x) * k; look.y += (want.y - look.y) * k
@@ -323,6 +367,7 @@ final class CritterEngine: ObservableObject {
                             groundY: inset.height + Critter.ground(body, in: area) + body.drawRadius,
                             scene: sceneFrame, sceneKind: scene, area: CGRect(x: inset.width, y: inset.height - body.radius, width: area.width, height: area.height + body.radius), sky: sky, prop: sceneProp, pixelEyes: pixelEyes, mood: mood, external: external,
                             bird: birdArriveAt >= 0 && clock >= birdArriveAt ? min(1, (clock - birdArriveAt) / 1.2) : 0, birdLeave: birdLeaveAt >= 0 ? min(1, (clock - birdLeaveAt) / 1.2) : 0,
+                            anchorX: inset.width + (sceneAnchorX ?? body.x),
                             burstAge: burstAt < 0 ? -1 : clock - burstAt, popAge: popAt < 0 ? -1 : clock - popAt, dropletAge: dropletAt < 0 ? -1 : clock - dropletAt)
     }
     /// Offscreen review: put the character in a state and let the face settle without a screen.
@@ -335,10 +380,12 @@ final class CritterEngine: ObservableObject {
         bubble = bubbleText ?? Critter.expressions[m]?.says.first
     }
     /// Offscreen review of a set piece at a given moment; one-tick effects can be pinned to a recent age.
-    func settle(scene s: Critter.Scene, t: Double, burst: Bool = false, pop: Bool = false, droplets: Bool = false, bubbleText: String? = nil) {
+    func settle(scene s: Critter.Scene, t: Double, burst: Bool = false, pop: Bool = false, droplets: Bool = false, bubbleText: String? = nil, seed: Int? = nil) {
         paused = true; scheduler.playfulness = 0; clock = max(clock, 10); blinkAt = clock + 5
         if s == .eat { sceneProp = "🍜" }
         perform(scene: s); sceneStartAt = clock - t
+        if let seed { sceneSeed = seed }
+        if let d = Critter.sceneFrame(s, t: t, seed: sceneSeed, from: sceneStartFrac).depth { body.z = d; body.zTarget = d; body.y = Critter.ground(body, in: area) }   // depth eases in real time; previews jump to it
         if burst { burstAt = clock - 0.12 }; if pop { popAt = clock - 0.1 }; if droplets { dropletAt = clock - 0.12 }
         for _ in 0..<60 { tick() }
         moodSetAt = clock - 5; publish()   // previews show the settled face, not the first frame of the dissolve
@@ -379,7 +426,7 @@ struct CritterView: View {
                     .padding(.horizontal, 10).padding(.vertical, 5)
                     .background(Color.white.opacity(0.96), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Color.black.opacity(0.12), lineWidth: 0.5))
-                    .fixedSize().position(x: s.center.x, y: s.center.y - s.drawRadius * (2 * (s.scene?.scale ?? 1) - 1) * s.face.sy * s.squash - 20 - ((s.scene?.balloon ?? 0) > 0 ? s.drawRadius * 3.7 : 0) - ((s.scene?.umbrella ?? false) || (s.sky.kind == .rain && s.sky.umbrella && s.sceneKind == nil) ? s.drawRadius * 1.9 : 0) - (s.scene?.eyeOut ?? 0) * s.drawRadius * 0.9 - (s.scene?.stretch ?? 0) * s.drawRadius * 1.3 - (s.bird > 0.5 && s.birdLeave == 0 ? s.drawRadius * 0.95 : 0))
+                    .fixedSize().position(x: s.center.x, y: s.center.y - s.drawRadius * (2 * (s.scene?.scale ?? 1) - 1) * s.face.sy * s.squash - 20 - ((s.scene?.balloon ?? 0) > 0 ? s.drawRadius * 3.7 : 0) - ((s.scene?.umbrella ?? false) || (s.sky.kind == .rain && s.sky.umbrella && s.sceneKind == nil) ? s.drawRadius * 1.9 : 0) - (s.scene?.eyeOut ?? 0) * s.drawRadius * 0.9 - (s.scene?.stretch ?? 0) * s.drawRadius * 1.3 - (s.bird > 0.5 && s.birdLeave == 0 ? s.drawRadius * 0.95 : 0) - (engine.menu == .closed ? 0 : 36) - ((s.scene?.hand ?? 0) == 1 ? s.drawRadius * 1.1 : 0))
                     .transition(.scale(scale: 0.4).combined(with: .opacity))
             }
             if let lang = engine.langLabel {
@@ -392,20 +439,50 @@ struct CritterView: View {
                 .position(s.center)
                 .gesture(DragGesture(minimumDistance: 4).onChanged { v in engine.strokeMoved(by: hypot(v.translation.width - lastDrag.width, v.translation.height - lastDrag.height)); lastDrag = v.translation }
                     .onEnded { _ in lastDrag = .zero })
-                .onTapGesture(count: 2) { engine.act(.tease) }
-                .onTapGesture { engine.onTap?() }
+                .onTapGesture(count: 3) { engine.closeMenu(); engine.onTap?() }   // triple-click = straight into settings
+                .onTapGesture(count: 2) { engine.choose(.play) }   // double-click = play with it
+                .onTapGesture { engine.toggleMenu() }
                 .contextMenu {
                     Menu("ให้อาหาร") { ForEach(Critter.Care.Food.allCases, id: \.self) { f in Button(f.emoji + " " + f.name) { engine.act(.feed(f)) } } }
                     Button("อ่านหนังสือ") { engine.act(.read) }
                     Button("เล่นด้วยกัน") { engine.act(.play) }
                     Button("เล่นหัว") { engine.act(.tease) }
+                    Button("ลูบหัว") { engine.act(.pat) }
+                    Button("เกาคาง") { engine.act(.chin) }
                     Divider()
                     Button("ตั้งค่า…") { engine.onTap?() }
                 }
+            if engine.menu != .closed {
+                let r = engine.menuRect()
+                HStack(spacing: 3) {
+                    switch engine.menu {
+                    case .root:
+                        Button("เมนู") { engine.closeMenu(); engine.onTap?() }
+                        Button("ให้อาหาร") { engine.closeMenu(); engine.act(.snack) }
+                        Button("เล่นด้วย") { engine.choose(.play) }
+                    case .play:
+                        Button("ลูบหัว") { engine.closeMenu(); engine.act(.pat) }
+                        Button("เกาคาง") { engine.closeMenu(); engine.act(.chin) }
+                        Button("เล่นหัว") { engine.closeMenu(); engine.act(.tease) }
+                        Button("เป่ายิ้งฉุบ") { engine.choose(.rps) }
+                    case .rps:
+                        ForEach(0..<3, id: \.self) { i in Button(Critter.Care.rpsEmoji[i]) { engine.playRPS(user: i) } }
+                    case .closed: EmptyView()
+                    }
+                }
+                .buttonStyle(MenuChip()).font(.system(size: 11, weight: .medium))
+                .padding(.horizontal, 5).padding(.vertical, 3)
+                .background(Color.white.opacity(0.96), in: Capsule())
+                .overlay(Capsule().strokeBorder(Color.black.opacity(0.12), lineWidth: 0.5))
+                .frame(width: r.width, height: r.height)
+                .position(x: r.midX, y: r.midY)
+                .transition(.scale(scale: 0.6).combined(with: .opacity))
+            }
         }
         .frame(width: engine.panelSize.width, height: engine.panelSize.height)
         .animation(engine.reduceMotion ? nil : .spring(response: 0.25, dampingFraction: 0.7), value: engine.bubble)
         .animation(engine.reduceMotion ? nil : .spring(response: 0.25, dampingFraction: 0.7), value: engine.langLabel)
+        .animation(engine.reduceMotion ? nil : .spring(response: 0.22, dampingFraction: 0.75), value: engine.menu)
     }
 }
 
@@ -429,7 +506,37 @@ enum CritterPainter {
         if sc.star > 0.001 { drawShootingStar(s, progress: sc.star, in: &ctx) }
         if sc.clouds { drawClouds(s, in: &ctx) }
         if sc.disco { drawDisco(s, in: &ctx) }
-        defer { if sc.water > 0.01 { drawWater(s, level: sc.water, in: &ctx) } }
+        if sc.beach { drawBeach(s, in: &ctx) }
+        if sc.grass { drawMeadow(s, in: &ctx) }
+        if sc.wall { drawWall(s, in: &ctx) }
+        if sc.goal { drawGoal(s, netHit: sc.netHit, t: t, in: &ctx) }
+        if sc.boot > 0.01 { drawBoot(s, presence: sc.boot, swing: sc.bootSwing, in: &ctx) }
+        if sc.table { drawTable(s, paddleL: sc.paddleL, paddleR: sc.paddleR, t: t, in: &ctx) }
+        if sc.toilet { var tc = ctx; tc.translateBy(x: s.anchorX, y: s.groundY); tc.scaleBy(x: s.drawRadius / 46, y: s.drawRadius / 46); drawToilet(in: &tc) }
+        if sc.glow > 0.01 { drawGlowHalo(s, amount: sc.glow, t: t, in: &ctx) }
+        if sc.catFrac != nil || sc.catRel != nil {
+            let cx = sc.catFrac.map { s.area.minX + s.area.width * $0 } ?? (s.center.x + (sc.catRel ?? 0) * s.drawRadius)
+            var catCtx = ctx; if sc.wall { catCtx.translateBy(x: 0, y: -wallHeight(s)) }
+            drawCat(s, x: cx, dir: sc.catDir, paw: sc.catPaw, meow: sc.catMeow, sit: sc.catSit, walking: sc.catFrac != nil || (sc.catRel != nil && !sc.catSit && sc.catPaw == 0), t: t, in: &catCtx)
+        }
+        if let fx = sc.forklift { drawForklift(s, x: fx, lift: sc.roomLift, in: &ctx) }
+        if sc.zebra { drawZebra(s, in: &ctx) }
+        if sc.road { drawRoad(s, in: &ctx) }
+        if let cx = sc.carX { drawCar(s, x: cx, in: &ctx) }
+        if sc.clones > 0.01 { drawClones(s, amount: sc.clones, vanish: sc.cloneVanish, chosen: sc.chosen, in: &ctx) }
+        if sc.girl > 0.01 { drawGirl(s, amount: sc.girl, in: &ctx) }
+        defer {
+            if sc.room > 0.01 { drawRestroom(s, presence: sc.room, lift: sc.roomLift, in: &ctx) }
+            if sc.inNet { drawNetFront(s, netHit: sc.netHit, t: t, in: &ctx) }
+            if sc.confetti > 0.01 { drawConfetti(s, amount: sc.confetti, t: t, in: &ctx) }
+            if sc.missCloud > 0.01 { drawMissCloud(s, t: t, in: &ctx) }
+            if let txt = sc.scoreText { drawScoreText(s, txt, goal: sc.confetti > 0, t: t, in: &ctx) }
+            if sc.catFrac != nil || sc.catRel != nil, sc.catPaw > 0.01 {
+                let cx = sc.catFrac.map { s.area.minX + s.area.width * $0 } ?? (s.center.x + (sc.catRel ?? 0) * s.drawRadius)
+                drawCatPaw(s, x: cx, dir: sc.catDir, paw: sc.catPaw, in: &ctx)
+            }
+            if sc.water > 0.01 { drawWater(s, level: sc.water, in: &ctx) }
+        }
         if s.burstAge >= 0 && s.burstAge < 0.45 { drawBurst(at: s.center, radius: s.drawRadius * 2.3, age: s.burstAge, unit: s.unit, in: &ctx) }
         if sc.hidden && sc.smokeCloud < 0.01 && sc.door < 0.01 { return }
         // Ground shadow: the one cue that turns "smaller" into "farther".
@@ -451,6 +558,13 @@ enum CritterPainter {
         if sc.dashX != 0 { drawAfterimages(direction: sc.dashX > 0 ? 1 : -1, in: &c) }
         if sc.dust { drawDust(t: t, still: s.still, in: &c) }
         if sc.speedLines > 0.01 { drawSpeedLines(amount: sc.speedLines, t: t, still: s.still, in: &c) }
+        if sc.towel { drawTowel(in: &c) }
+        if sc.bench { drawBench(in: &c) }
+        if sc.lamp > 0.01 { drawLamp(s, amount: sc.lamp, on: sc.lampOn, finger: sc.lampFinger, in: &c) }
+        if sc.board { drawBoard(t: t, still: s.still, in: &c) }
+        if sc.bag > 0.01 { drawBag(amount: sc.bag, t: t, still: s.still, in: &c) }
+        if sc.kite > 0.01 { drawKite(amount: sc.kite, t: t, still: s.still, in: &c) }
+        if sc.pump > 0.01 { drawPump(presence: sc.pump, stroke: sc.pumpStroke, t: t, still: s.still, in: &c) }
         if sc.bomb > 0.01 || sc.smokeCloud > 0.01 || sc.door > 0.01 { drawNinja(bomb: sc.bomb, cloud: sc.smokeCloud, door: sc.door, doorOpen: sc.doorOpen, t: t, still: s.still, in: &c) }
         if sc.hidden { return }
         if let pl = sc.plane { drawPlane(at: CGPoint(x: pl.x * 46, y: pl.y * 46), t: t, still: s.still, in: &c) }
@@ -499,6 +613,7 @@ enum CritterPainter {
             }
         }
         // Squash about the bottom of the body, then the head tilt.
+        let preSquash = c   // props that must not squash with the body (the soul leaving a flattened one)
         if sc.spinDeg != 0 { c.rotate(by: .degrees(sc.spinDeg)) }
         c.translateBy(x: 0, y: 46)
         c.scaleBy(x: f.sx * (2 - s.squash) * Critter.turnSqueeze(front: f.front) * (1 + 0.6 * sc.flat) * (1 - 0.25 * sc.stretch) * (1 + 0.7 * sc.melt), y: f.sy * s.squash * (1 - 0.85 * sc.flat) * (1 + 1.3 * sc.stretch) * (1 - 0.7 * sc.melt))
@@ -513,6 +628,7 @@ enum CritterPainter {
             }
         } else {
             c.fill(bodyPath, with: .color(ink))
+            if sc.glow > 0.01 { c.fill(bodyPath, with: .color(Color(red: 1.0, green: 0.85, blue: 0.3).opacity(sc.glow * 0.95))); c.fill(Path(ellipseIn: CGRect(x: -30, y: -34, width: 22, height: 14)), with: .color(.white.opacity(0.5 * sc.glow))) }
             c.stroke(bodyPath, with: .color(.white.opacity(0.16)), lineWidth: 1.2)   // keeps it visible over a black window
         }
         if s.sky.kind == .snow && s.sceneKind == nil { drawSnowCap(amount: min(1, s.sky.age / 90), in: &c) }
@@ -584,6 +700,9 @@ enum CritterPainter {
         if sc.pacifier > 0.01 { drawPacifier(at: mouth, amount: sc.pacifier, t: t, still: s.still, in: &c) }
         if sc.snot > 0.01 { drawSnot(at: CGPoint(x: mouth.x, y: mouth.y - 8), amount: sc.snot, t: t, still: s.still, in: &c) }
         if sc.ice > 0.01 { drawIce(amount: sc.ice, in: &c) }
+        if sc.soul > 0.001 { var sp = preSquash; drawSoul(progress: sc.soul, t: t, still: s.still, in: &sp) }
+        if sc.hand > 0 { drawHand(kind: sc.hand, phase: sc.handPhase, in: &c) }
+        if sc.newspaper { var np = preSquash; drawNewspaper(t: t, still: s.still, in: &np) }
         if s.bird > 0.001 || s.birdLeave > 0.001 { drawBird(arrive: s.bird, leave: s.birdLeave, t: t, still: s.still, in: &c) }
         if sc.box > 0.01 { drawBox(lowered: sc.box, eyeLevel: (aL.y + aR.y) / 2, in: &c) }
     }
@@ -725,10 +844,11 @@ enum CritterPainter {
     }
     static func drawAnvil(drop: Double, flat: Double, in c: inout GraphicsContext) {
         let bodyTop = 46 - 92 * (1 - 0.85 * flat)
-        let bottom = bodyTop - (1 - drop) * 150
-        var p = Path()
-        p.move(to: CGPoint(x: -34, y: bottom - 34)); p.addLine(to: CGPoint(x: 34, y: bottom - 34)); p.addLine(to: CGPoint(x: 22, y: bottom - 16))
-        p.addLine(to: CGPoint(x: 14, y: bottom - 16)); p.addLine(to: CGPoint(x: 18, y: bottom)); p.addLine(to: CGPoint(x: -18, y: bottom)); p.addLine(to: CGPoint(x: -14, y: bottom - 16)); p.addLine(to: CGPoint(x: -22, y: bottom - 16)); p.closeSubpath()
+        let bottom = bodyTop - (1 - drop) * 170
+        var p = Path()   // classic anvil, 1.8x the old one: horn, face, waist, foot
+        p.move(to: CGPoint(x: -62, y: bottom - 62)); p.addLine(to: CGPoint(x: 62, y: bottom - 62)); p.addLine(to: CGPoint(x: 40, y: bottom - 30))
+        p.addLine(to: CGPoint(x: 24, y: bottom - 30)); p.addLine(to: CGPoint(x: 32, y: bottom)); p.addLine(to: CGPoint(x: -32, y: bottom)); p.addLine(to: CGPoint(x: -24, y: bottom - 30)); p.addLine(to: CGPoint(x: -40, y: bottom - 30)); p.closeSubpath()
+        p.move(to: CGPoint(x: -62, y: bottom - 62)); p.addQuadCurve(to: CGPoint(x: -92, y: bottom - 52), control: CGPoint(x: -84, y: bottom - 62)); p.addLine(to: CGPoint(x: -62, y: bottom - 44)); p.closeSubpath()
         c.fill(p, with: .color(Color(white: 0.3)))
         c.stroke(p, with: .color(Color(white: 0.55)), lineWidth: 1.5)
     }
@@ -821,10 +941,10 @@ enum CritterPainter {
     static func drawUmbrella(t: Double, still: Bool, in c: inout GraphicsContext) {
         // Wagasa: a wide, shallow paper canopy on many thin bamboo ribs, a thin straight handle — held up to the side.
         var u = c
-        u.translateBy(x: 12, y: -26 + (still ? 0 : sin(t * 2) * 1.5))
+        u.translateBy(x: 12, y: -40 + (still ? 0 : sin(t * 2) * 1.5))
         u.rotate(by: .degrees(-12))
         let top = CGPoint(x: 0, y: -50), r = 72.0, depth = 28.0
-        var pole = Path(); pole.move(to: CGPoint(x: 0, y: top.y - 4)); pole.addLine(to: CGPoint(x: 0, y: 44))
+        var pole = Path(); pole.move(to: CGPoint(x: 0, y: top.y - 4)); pole.addLine(to: CGPoint(x: 0, y: 58))
         u.stroke(pole, with: .color(Color(red: 0.55, green: 0.42, blue: 0.25)), style: StrokeStyle(lineWidth: 1.8, lineCap: .round))
         var canopy = Path()
         canopy.move(to: CGPoint(x: -r, y: top.y + depth))
@@ -844,16 +964,23 @@ enum CritterPainter {
     }
     static func drawNinja(bomb: Double, cloud: Double, door: Double, doorOpen: Double, t: Double, still: Bool, in c: inout GraphicsContext) {
         if door > 0.01 {
-            // A door standing on the floor behind where it stood: frame, panel swinging open toward the viewer's left.
-            var d = c; d.translateBy(x: -6, y: 46); d.scaleBy(x: 1, y: door)
-            let frame = CGRect(x: -34, y: -100, width: 68, height: 100)
-            d.fill(Path(roundedRect: frame, cornerRadius: 3), with: .color(Color(red: 0.50, green: 0.34, blue: 0.20)))
-            d.fill(Path(CGRect(x: -29, y: -95, width: 58, height: 95)), with: .color(Color(white: 0.10)))
-            var panel = d; panel.translateBy(x: -29, y: 0); panel.scaleBy(x: max(0.04, 1 - doorOpen * 0.92), y: 1); panel.translateBy(x: 29, y: 0)
-            panel.fill(Path(CGRect(x: -29, y: -95, width: 58, height: 95)), with: .color(Color(red: 0.70, green: 0.50, blue: 0.30)))
-            panel.stroke(Path(CGRect(x: -22, y: -88, width: 44, height: 36)), with: .color(Color(red: 0.50, green: 0.34, blue: 0.20)), lineWidth: 2)
-            panel.stroke(Path(CGRect(x: -22, y: -44, width: 44, height: 36)), with: .color(Color(red: 0.50, green: 0.34, blue: 0.20)), lineWidth: 2)
-            panel.fill(Path(ellipseIn: CGRect(x: 16, y: -52, width: 6, height: 6)), with: .color(Color(red: 0.9, green: 0.75, blue: 0.3)))
+            // A shoji: paper panels in a wooden frame, one panel sliding left to open.
+            var d = c; d.translateBy(x: -4, y: 46); d.scaleBy(x: 1, y: door)
+            let wood = Color(red: 0.42, green: 0.28, blue: 0.16), paper = Color(red: 0.96, green: 0.93, blue: 0.85)
+            d.fill(Path(CGRect(x: -74, y: -104, width: 148, height: 104)), with: .color(Color(white: 0.10)))
+            var frame = Path(); frame.addRect(CGRect(x: -74, y: -104, width: 148, height: 6)); frame.addRect(CGRect(x: -74, y: -5, width: 148, height: 5))
+            d.fill(frame, with: .color(wood))
+            let panelW = 70.0
+            for (i, px0) in [(0, -70.0 - doorOpen * 66), (1, 2.0)] {
+                var pn = d; pn.clip(to: Path(CGRect(x: -74, y: -104, width: 148, height: 104)))
+                let r = CGRect(x: px0, y: -98, width: panelW, height: 93)
+                pn.fill(Path(r), with: .color(paper.opacity(i == 0 ? 0.92 : 0.85)))
+                var grid = Path()
+                for k in 1..<4 { grid.move(to: CGPoint(x: r.minX + Double(k) * panelW / 4, y: r.minY)); grid.addLine(to: CGPoint(x: r.minX + Double(k) * panelW / 4, y: r.maxY)) }
+                for k in 1..<5 { grid.move(to: CGPoint(x: r.minX, y: r.minY + Double(k) * r.height / 5)); grid.addLine(to: CGPoint(x: r.maxX, y: r.minY + Double(k) * r.height / 5)) }
+                pn.stroke(grid, with: .color(wood.opacity(0.85)), lineWidth: 1.6)
+                pn.stroke(Path(r), with: .color(wood), lineWidth: 3)
+            }
         }
         if bomb > 0.01 {
             let y = -20 + 66 * bomb, x = 10 + 8 * bomb
@@ -879,6 +1006,129 @@ enum CritterPainter {
         p.addQuadCurve(to: CGPoint(x: o.x + 4.5, y: o.y - 8 + bounce), control: CGPoint(x: o.x + 9, y: o.y - 6 + bounce))
         p.closeSubpath()
         return p
+    }
+    static func drawZebra(_ s: CritterEngine.Snapshot, in ctx: inout GraphicsContext) {
+        let a = s.area, u = s.unit
+        ctx.fill(Path(CGRect(x: a.minX - 20 * u, y: s.groundY - 4 * u, width: a.width + 40 * u, height: 22 * u)), with: .color(Color(white: 0.25)))
+        var stripes = Path()
+        var x = a.minX + 10 * u
+        while x < a.maxX { stripes.addRect(CGRect(x: x, y: s.groundY - 2 * u, width: 14 * u, height: 18 * u)); x += 26 * u }
+        ctx.fill(stripes, with: .color(.white.opacity(0.85)))
+    }
+    static func drawRoad(_ s: CritterEngine.Snapshot, in ctx: inout GraphicsContext) {
+        let a = s.area, u = s.unit
+        ctx.fill(Path(CGRect(x: a.minX - 20 * u, y: s.groundY - 4 * u, width: a.width + 40 * u, height: 22 * u)), with: .color(Color(white: 0.25)))
+        var dashes = Path()
+        var x = a.minX
+        while x < a.maxX { dashes.addRect(CGRect(x: x, y: s.groundY + 5 * u, width: 16 * u, height: 3 * u)); x += 30 * u }
+        ctx.fill(dashes, with: .color(Color(red: 1, green: 0.85, blue: 0.3).opacity(0.8)))
+    }
+    static func drawCar(_ s: CritterEngine.Snapshot, x: Double, in ctx: inout GraphicsContext) {
+        // Side view, driving left, fast: body, cabin, wheels, and streaks behind it.
+        let r = s.drawRadius, cx = s.center.x + x * r, cy = s.groundY - r * 0.55
+        var c = ctx; c.translateBy(x: cx, y: cy)
+        let red = Color(red: 0.85, green: 0.2, blue: 0.2)
+        c.fill(Path(roundedRect: CGRect(x: -r * 1.6, y: -r * 0.5, width: r * 3.2, height: r * 0.9), cornerRadius: r * 0.2), with: .color(red))
+        c.fill(Path(roundedRect: CGRect(x: -r * 1.0, y: -r * 1.1, width: r * 1.7, height: r * 0.8), cornerRadius: r * 0.25), with: .color(red))
+        c.fill(Path(roundedRect: CGRect(x: -r * 0.85, y: -r * 1.0, width: r * 0.7, height: r * 0.55), cornerRadius: r * 0.1), with: .color(Color(red: 0.6, green: 0.85, blue: 1.0)))
+        c.fill(Path(roundedRect: CGRect(x: -r * 0.05, y: -r * 1.0, width: r * 0.6, height: r * 0.55), cornerRadius: r * 0.1), with: .color(Color(red: 0.6, green: 0.85, blue: 1.0)))
+        for wx in [-r * 1.0, r * 1.0] {
+            c.fill(Path(ellipseIn: CGRect(x: wx - r * 0.32, y: r * 0.15, width: r * 0.64, height: r * 0.64)), with: .color(ink))
+            c.fill(Path(ellipseIn: CGRect(x: wx - r * 0.14, y: r * 0.33, width: r * 0.28, height: r * 0.28)), with: .color(Color(white: 0.7)))
+        }
+        c.fill(Path(ellipseIn: CGRect(x: -r * 1.7, y: -r * 0.3, width: r * 0.2, height: r * 0.2)), with: .color(Color(red: 1, green: 0.95, blue: 0.6)))
+        var streaks = Path()
+        for y in [-r * 0.3, 0, r * 0.3] { streaks.move(to: CGPoint(x: r * 1.7, y: y)); streaks.addLine(to: CGPoint(x: r * 2.6 + abs(y), y: y)) }
+        c.stroke(streaks, with: .color(ink.opacity(0.45)), style: StrokeStyle(lineWidth: max(1, 2 * s.unit), lineCap: .round))
+    }
+    static func drawBeach(_ s: CritterEngine.Snapshot, in ctx: inout GraphicsContext) {
+        let a = s.area, u = s.unit
+        // Sea along the back, sand in front, a sun and a palm — all flat colour, drawn behind the body.
+        let horizon = s.groundY - 46 * u
+        ctx.fill(Path(CGRect(x: a.minX - 20 * u, y: horizon, width: a.width + 40 * u, height: 26 * u)), with: .color(Color(red: 0.35, green: 0.65, blue: 0.92).opacity(0.85)))
+        var waves = Path()
+        for i in 0..<6 { let x = a.minX + Double(i) * a.width / 5 + (s.still ? 0 : sin(s.t * 1.5 + Double(i)) * 6 * u), y = horizon + 8 * u + Double(i % 2) * 8 * u; waves.move(to: CGPoint(x: x, y: y)); waves.addQuadCurve(to: CGPoint(x: x + 22 * u, y: y), control: CGPoint(x: x + 11 * u, y: y - 4 * u)) }
+        ctx.stroke(waves, with: .color(.white.opacity(0.7)), lineWidth: 1.2 * u)
+        ctx.fill(Path(CGRect(x: a.minX - 20 * u, y: horizon + 26 * u, width: a.width + 40 * u, height: 40 * u)), with: .color(Color(red: 0.95, green: 0.86, blue: 0.62)))
+        let sun = CGPoint(x: a.minX + 56 * u, y: a.minY + 22 * u)
+        ctx.fill(Path(ellipseIn: CGRect(x: sun.x - 30 * u, y: sun.y - 30 * u, width: 60 * u, height: 60 * u)), with: .color(Color(red: 1, green: 0.8, blue: 0.25).opacity(0.35)))
+        ctx.fill(Path(ellipseIn: CGRect(x: sun.x - 24 * u, y: sun.y - 24 * u, width: 48 * u, height: 48 * u)), with: .color(Color(red: 1, green: 0.8, blue: 0.25)))
+        // Palm: bent trunk, five fronds, two coconuts.
+        // The palm stands at the far right edge, tall enough that the body never covers it.
+        let base = CGPoint(x: a.maxX - 14 * u, y: s.groundY + 2 * u), topP = CGPoint(x: base.x - 22 * u, y: base.y - 128 * u)
+        var trunk = Path(); trunk.move(to: base); trunk.addQuadCurve(to: topP, control: CGPoint(x: base.x + 14 * u, y: base.y - 70 * u))
+        ctx.stroke(trunk, with: .color(Color(red: 0.55, green: 0.38, blue: 0.22)), style: StrokeStyle(lineWidth: 8 * u, lineCap: .round))
+        var rings = Path()
+        for i in 1...6 { let q = Double(i) / 7, px = base.x + (topP.x - base.x) * q + 14 * u * 2 * q * (1 - q), py = base.y + (topP.y - base.y) * q; rings.move(to: CGPoint(x: px - 4 * u, y: py)); rings.addLine(to: CGPoint(x: px + 4 * u, y: py)) }
+        ctx.stroke(rings, with: .color(Color(red: 0.4, green: 0.26, blue: 0.14)), lineWidth: 1.5 * u)
+        for ang in [-165.0, -130.0, -95.0, -60.0, -25.0, 10.0] {
+            let rad = ang * .pi / 180, tip = CGPoint(x: topP.x + cos(rad) * 56 * u, y: topP.y + sin(rad) * 34 * u + 22 * u)
+            var frond = Path(); frond.move(to: topP); frond.addQuadCurve(to: tip, control: CGPoint(x: (topP.x + tip.x) / 2, y: min(topP.y, tip.y) - 20 * u))
+            ctx.stroke(frond, with: .color(Color(red: 0.25, green: 0.6, blue: 0.3)), style: StrokeStyle(lineWidth: 6 * u, lineCap: .round))
+            var leaflets = Path()
+            for k in 1...4 { let q = Double(k) / 5, px = topP.x + (tip.x - topP.x) * q, py = topP.y + (tip.y - topP.y) * q - 20 * u * 4 * q * (1 - q); leaflets.move(to: CGPoint(x: px, y: py)); leaflets.addLine(to: CGPoint(x: px + 2 * u, y: py + 9 * u)) }
+            ctx.stroke(leaflets, with: .color(Color(red: 0.2, green: 0.5, blue: 0.25)), style: StrokeStyle(lineWidth: 3 * u, lineCap: .round))
+        }
+        for dx in [-6.0, 4.0, -1.0] { ctx.fill(Path(ellipseIn: CGRect(x: topP.x + dx * u - 4 * u, y: topP.y + 4 * u, width: 8 * u, height: 8 * u)), with: .color(Color(red: 0.45, green: 0.3, blue: 0.15))) }
+    }
+    static func drawClones(_ s: CritterEngine.Snapshot, amount: Double, vanish: Double, chosen: Int, in ctx: inout GraphicsContext) {
+        // Four copies fanning out from where it stood; the chosen one keeps its glow while the others puff away.
+        let r = s.drawRadius, offsets = [-2.6, -0.9, 0.9, 2.6], sizes = [0.6, 1.15, 0.8, 0.95]
+        for i in 0..<4 {
+            let k = sizes[i], cx = s.center.x + offsets[i] * r * amount, cy = s.groundY - r * k
+            let gone = i == chosen ? 0.0 : vanish
+            if gone < 1 {
+                var c = ctx; c.translateBy(x: cx, y: cy); c.scaleBy(x: k * (1 - gone * 0.4), y: k * (1 - gone * 0.4))
+                c.opacity = (i == chosen ? 1 : 0.9) * (1 - gone)
+                c.fill(Path(ellipseIn: CGRect(x: -r, y: -r, width: 2 * r, height: 2 * r)), with: .color(ink))
+                c.stroke(Path(ellipseIn: CGRect(x: -r, y: -r, width: 2 * r, height: 2 * r)), with: .color(.white.opacity(0.16)), lineWidth: 1.2)
+                let eyeW = r * 0.2 * (s.pixelEyes ? 1.3 : 1), eyeH = r * 0.5 * (s.pixelEyes ? 1.3 : 1)
+                for ex in [-r * 0.28, r * 0.24] {
+                    var e = Path(roundedRect: CGRect(x: ex - eyeW / 2, y: -r * 0.3 - eyeH / 2, width: eyeW, height: eyeH), cornerRadius: eyeW / 2)
+                    e = e.applying(CGAffineTransform(translationX: ex, y: -r * 0.3).rotated(by: 22 * .pi / 180).translatedBy(x: -ex, y: r * 0.3))
+                    if s.pixelEyes { var d = c; d.scaleBy(x: r / 46, y: r / 46); drawDots(e.applying(CGAffineTransform(scaleX: 46 / r, y: 46 / r)), alpha: 1, mode: .plain, t: s.t, age: 5, still: s.still, in: &d) }
+                    else { c.fill(e, with: .color(.white)) }
+                }
+                if i == chosen && vanish > 0 { for j in 0..<3 { let a = Double(j) * 2.1 + s.t * 2, sp = CGPoint(x: cos(a) * r * 1.3, y: sin(a) * r * 1.3 - r * 0.2); c.fill(Path(ellipseIn: CGRect(x: sp.x - 2 * s.unit, y: sp.y - 2 * s.unit, width: 4 * s.unit, height: 4 * s.unit)), with: .color(Color(red: 0.94, green: 0.62, blue: 0.15))) } }
+            }
+            if i != chosen && vanish > 0 && vanish < 1 {
+                var p = ctx
+                for j in 0..<4 { let rr = r * (0.3 + vanish * 0.5), ang = Double(j) * .pi / 2 + 0.6; p.fill(Path(ellipseIn: CGRect(x: cx + cos(ang) * r * 0.5 * vanish - rr, y: cy + sin(ang) * r * 0.5 * vanish - rr, width: 2 * rr, height: 2 * rr)), with: .color(Color(white: 0.62).opacity(0.8 * (1 - vanish)))) }
+            }
+        }
+    }
+    static func drawGirl(_ s: CritterEngine.Snapshot, amount: Double, in ctx: inout GraphicsContext) {
+        // Same body, long wig with a fringe and two strands, a bow, red cheeks; she sways a little and blinks on her own.
+        let r = s.drawRadius, cx = s.area.minX + s.area.width * 0.86, cy = s.groundY - r
+        var c = ctx; c.translateBy(x: cx, y: cy); c.scaleBy(x: amount, y: amount); c.opacity = amount
+        let k = r / 46; c.scaleBy(x: k, y: k)
+        let sway = s.still ? 0 : sin(s.t * 1.7) * 3
+        c.rotate(by: .degrees(sway))
+        let hair = Color(red: 0.95, green: 0.78, blue: 0.30)
+        // Bob: rounded sides that stop at the cheeks, curling in a little.
+        var strands = Path()
+        strands.addRoundedRect(in: CGRect(x: -56, y: -24, width: 22, height: 50), cornerSize: CGSize(width: 11, height: 11))
+        strands.addRoundedRect(in: CGRect(x: 34, y: -24, width: 22, height: 50), cornerSize: CGSize(width: 11, height: 11))
+        c.fill(strands, with: .color(hair))
+        c.fill(Path(ellipseIn: CGRect(x: -46, y: -46, width: 92, height: 92)), with: .color(ink))
+        c.stroke(Path(ellipseIn: CGRect(x: -46, y: -46, width: 92, height: 92)), with: .color(.white.opacity(0.16)), lineWidth: 1.2)
+        var cap = Path(); cap.move(to: CGPoint(x: -47, y: -6))
+        cap.addArc(center: .zero, radius: 47, startAngle: .degrees(187), endAngle: .degrees(353), clockwise: false)
+        for i in 0..<5 { cap.addQuadCurve(to: CGPoint(x: 47 - Double(i + 1) * 18.8, y: -8), control: CGPoint(x: 47 - Double(i) * 18.8 - 9.4, y: 4)) }
+        cap.closeSubpath()
+        c.fill(cap, with: .color(hair))
+        var bow = Path(); bow.move(to: CGPoint(x: 28, y: -38)); bow.addLine(to: CGPoint(x: 12, y: -46)); bow.addLine(to: CGPoint(x: 12, y: -30)); bow.closeSubpath()
+        bow.move(to: CGPoint(x: 28, y: -38)); bow.addLine(to: CGPoint(x: 44, y: -46)); bow.addLine(to: CGPoint(x: 44, y: -30)); bow.closeSubpath()
+        c.fill(bow, with: .color(Color(red: 0.93, green: 0.35, blue: 0.5)))
+        c.fill(Path(ellipseIn: CGRect(x: 24, y: -42, width: 8, height: 8)), with: .color(Color(red: 0.75, green: 0.2, blue: 0.38)))
+        for x in [-26.0, 20.0] { c.fill(Path(ellipseIn: CGRect(x: x - 8, y: 12, width: 16, height: 9)), with: .color(Color(red: 0.9, green: 0.3, blue: 0.4).opacity(0.85))) }
+        let blink = s.still ? false : (s.t * 0.37).truncatingRemainder(dividingBy: 1) > 0.94
+        for x in [-14.0, 14.0] {
+            let h = blink ? 2.5 : 24.0
+            let eye = Path(roundedRect: CGRect(x: x - 4.5, y: -8 - h / 2, width: 9, height: h), cornerRadius: 4.5).applying(CGAffineTransform(translationX: x, y: -8).rotated(by: -12 * .pi / 180).translatedBy(x: -x, y: 8))
+            if s.pixelEyes { drawDots(eye, alpha: 1, mode: .plain, t: s.t, age: 5, still: s.still, in: &c) } else { c.fill(eye, with: .color(.white)) }
+            if !blink { var lash = Path(); lash.move(to: CGPoint(x: x + 4, y: -20)); lash.addLine(to: CGPoint(x: x + 9, y: -24)); c.stroke(lash, with: .color(.white.opacity(0.8)), style: StrokeStyle(lineWidth: 2, lineCap: .round)) }
+        }
     }
     static func drawClouds(_ s: CritterEngine.Snapshot, in ctx: inout GraphicsContext) {
         let a = s.area, u = s.unit
@@ -984,6 +1234,433 @@ enum CritterPainter {
             c.fill(Path(ellipseIn: CGRect(x: p.x - pr, y: p.y - pr, width: 2 * pr, height: 2 * pr)), with: .color(pixel ? led : Color(red: 0.85, green: 0.3, blue: 0.5)))
             c.fill(Path(ellipseIn: CGRect(x: p.x - pr * 0.45, y: p.y - pr * 0.45, width: pr * 0.9, height: pr * 0.9)), with: .color(ink))
         }
+    }
+    static func drawPump(presence: Double, stroke: Double, t: Double, still: Bool, in c: inout GraphicsContext) {
+        // A floor pump beside it, hose into the body; the handle goes down on each stroke.
+        var p = c; p.translateBy(x: 78 + (1 - presence) * 90, y: 46)
+        let metal = Color(white: 0.32), dark = Color(white: 0.18)
+        p.fill(Path(roundedRect: CGRect(x: -6, y: -60, width: 12, height: 60), cornerRadius: 3), with: .color(metal))
+        p.fill(Path(roundedRect: CGRect(x: -4, y: -56, width: 3, height: 50), cornerRadius: 1.5), with: .color(.white.opacity(0.35)))
+        p.stroke(Path(roundedRect: CGRect(x: -6, y: -60, width: 12, height: 60), cornerRadius: 3), with: .color(.white.opacity(0.4)), lineWidth: 1)
+        p.fill(Path(CGRect(x: -16, y: -3, width: 32, height: 4)), with: .color(dark))
+        let handleY = -60 - 26 * (1 - stroke)
+        p.fill(Path(roundedRect: CGRect(x: -2.5, y: handleY, width: 5, height: -handleY - 60 + 6), cornerRadius: 2), with: .color(dark))
+        p.fill(Path(roundedRect: CGRect(x: -20, y: handleY - 4, width: 40, height: 6), cornerRadius: 3), with: .color(Color(red: 0.75, green: 0.2, blue: 0.2)))
+        var hose = Path(); hose.move(to: CGPoint(x: -6, y: -8)); hose.addCurve(to: CGPoint(x: -52, y: -6), control1: CGPoint(x: -28, y: -8), control2: CGPoint(x: -36, y: 8))
+        p.stroke(hose, with: .color(dark), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+    }
+    static func drawSoul(progress: Double, t: Double, still: Bool, in c: inout GraphicsContext) {
+        // A winged spirit: rises out of the body, flies one loop around it, and dives back in.
+        let p = progress
+        let pos: CGPoint
+        // Straight up into the sky first, one loop high above, then a dive back down.
+        if p < 0.25 { let q = p / 0.25; pos = CGPoint(x: 0, y: -10 - 230 * q * (2 - q)) }
+        else if p < 0.8 { let a = (p - 0.25) / 0.55 * .pi * 2; pos = CGPoint(x: sin(a) * 100, y: -240 + (1 - cos(a)) * 40) }
+        else { let q = (p - 0.8) / 0.2; pos = CGPoint(x: 0, y: -240 + 230 * q * q) }
+        let dir: Double = p >= 0.25 && p < 0.8 ? (cos((p - 0.25) / 0.55 * .pi * 2) >= 0 ? 1 : -1) : 1
+        var g = c; g.translateBy(x: pos.x + (still ? 0 : sin(t * 4) * 2), y: pos.y + (still ? 0 : sin(t * 5) * 2)); g.scaleBy(x: dir, y: 1)
+        let a = p > 0.9 ? 0.9 * (1 - (p - 0.9) / 0.1) : p < 0.06 ? 0.9 * p / 0.06 : 0.9
+        let flap = still ? 0.5 : 0.5 + 0.5 * sin(t * 22)
+        for side in [-1.0, 1.0] {
+            var wing = Path(); wing.move(to: CGPoint(x: side * 10, y: -2))
+            wing.addQuadCurve(to: CGPoint(x: side * (26 + 8 * flap), y: -14 - 14 * flap), control: CGPoint(x: side * 24, y: -2 - 10 * flap))
+            wing.addQuadCurve(to: CGPoint(x: side * 12, y: 8), control: CGPoint(x: side * (30 + 6 * flap), y: 2))
+            wing.closeSubpath()
+            g.fill(wing, with: .color(.white.opacity(a * 0.85)))
+            g.stroke(wing, with: .color(Color(white: 0.75).opacity(a)), lineWidth: 1)
+        }
+        var body = Path()
+        body.move(to: CGPoint(x: -13, y: 0)); body.addArc(center: .zero, radius: 13, startAngle: .degrees(180), endAngle: .degrees(360), clockwise: false)
+        body.addLine(to: CGPoint(x: 13, y: 15))
+        for i in 0..<3 { body.addQuadCurve(to: CGPoint(x: 13 - Double(i + 1) * 8.67, y: 15), control: CGPoint(x: 13 - Double(i) * 8.67 - 4.3, y: 15 + (i % 2 == 0 ? 6 : -5))) }
+        body.closeSubpath()
+        g.fill(body, with: .color(.white.opacity(a)))
+        for dx in [-5.0, 5.0] { g.fill(Path(ellipseIn: CGRect(x: dx - 2, y: -4, width: 4, height: 6)), with: .color(ink.opacity(a))) }
+        g.stroke(Path(ellipseIn: CGRect(x: -9, y: -23, width: 18, height: 5)), with: .color(Color(red: 1, green: 0.9, blue: 0.4).opacity(a)), lineWidth: 2)
+    }
+    static func drawBench(in c: inout GraphicsContext) {
+        // A slatted park bench under it: two planks, a low back, iron legs.
+        let wood = Color(red: 0.62, green: 0.42, blue: 0.24), iron = Color(white: 0.25)
+        var legs = Path(); legs.addRect(CGRect(x: -62, y: 20, width: 5, height: 26)); legs.addRect(CGRect(x: 57, y: 20, width: 5, height: 26))
+        c.fill(legs, with: .color(iron))
+        var planks = Path(); planks.addRoundedRect(in: CGRect(x: -74, y: 18, width: 148, height: 8), cornerSize: CGSize(width: 3, height: 3)); planks.addRoundedRect(in: CGRect(x: -74, y: 28, width: 148, height: 8), cornerSize: CGSize(width: 3, height: 3))
+        c.fill(planks, with: .color(wood))
+        var back = Path(); back.addRoundedRect(in: CGRect(x: -74, y: -6, width: 148, height: 7), cornerSize: CGSize(width: 3, height: 3))
+        c.fill(back, with: .color(wood.opacity(0.7)))
+        var posts = Path(); posts.addRect(CGRect(x: -60, y: -6, width: 4, height: 26)); posts.addRect(CGRect(x: 56, y: -6, width: 4, height: 26))
+        c.fill(posts, with: .color(iron.opacity(0.7)))
+    }
+    static func drawRestroom(_ s: CritterEngine.Snapshot, presence: Double, lift: Double, in ctx: inout GraphicsContext) {
+        // A portable toilet cabin standing where the body went in; the forklift carries it up and to the right.
+        let r = s.drawRadius
+        var c = ctx; c.translateBy(x: s.anchorX + lift * r * 1.6, y: s.groundY - lift * r * 3.8); c.scaleBy(x: r / 46, y: r / 46)
+        c.opacity = presence
+        let blue = Color(red: 0.25, green: 0.55, blue: 0.85), dark = Color(red: 0.15, green: 0.35, blue: 0.6)
+        c.fill(Path(roundedRect: CGRect(x: -52, y: -150, width: 104, height: 150), cornerRadius: 6), with: .color(blue))
+        c.fill(Path(roundedRect: CGRect(x: -58, y: -158, width: 116, height: 14), cornerRadius: 5), with: .color(dark))
+        c.fill(Path(roundedRect: CGRect(x: -36, y: -130, width: 72, height: 128), cornerRadius: 4), with: .color(dark))
+        c.fill(Path(ellipseIn: CGRect(x: 22, y: -70, width: 7, height: 7)), with: .color(Color(white: 0.85)))
+        var vents = Path(); for y in stride(from: -118.0, through: -100, by: 6) { vents.move(to: CGPoint(x: -26, y: y)); vents.addLine(to: CGPoint(x: 26, y: y)) }
+        c.stroke(vents, with: .color(blue.opacity(0.9)), lineWidth: 2)
+        c.draw(Text("WC").font(.system(size: 14, weight: .bold)).foregroundColor(.white), at: CGPoint(x: 0, y: -140), anchor: .center)
+    }
+    static func drawForklift(_ s: CritterEngine.Snapshot, x: Double, lift: Double, in ctx: inout GraphicsContext) {
+        let r = s.drawRadius
+        var c = ctx; c.translateBy(x: s.anchorX + x * r + r * 2.4, y: s.groundY); c.scaleBy(x: r / 46, y: r / 46)
+        let yellow = Color(red: 0.96, green: 0.75, blue: 0.15), dark = Color(white: 0.2)
+        c.fill(Path(roundedRect: CGRect(x: -40, y: -46, width: 80, height: 36), cornerRadius: 6), with: .color(yellow))
+        c.fill(Path(roundedRect: CGRect(x: -34, y: -96, width: 44, height: 52), cornerRadius: 4), with: .color(yellow.opacity(0.85)))
+        c.fill(Path(CGRect(x: -26, y: -88, width: 28, height: 30)), with: .color(Color(red: 0.6, green: 0.85, blue: 1.0)))
+        for wx in [-24.0, 22.0] { c.fill(Path(ellipseIn: CGRect(x: wx - 13, y: -18, width: 26, height: 26)), with: .color(dark)); c.fill(Path(ellipseIn: CGRect(x: wx - 5, y: -10, width: 10, height: 10)), with: .color(Color(white: 0.7))) }
+        c.fill(Path(CGRect(x: -52, y: -200, width: 8, height: 202)), with: .color(dark))
+        c.fill(Path(CGRect(x: -62, y: -200, width: 8, height: 202)), with: .color(dark.opacity(0.7)))
+        let forkY = -8 - lift * 174
+        c.fill(Path(CGRect(x: -120, y: forkY, width: 70, height: 6)), with: .color(dark))
+        c.fill(Path(CGRect(x: -58, y: forkY - 14, width: 10, height: 20)), with: .color(dark))
+    }
+    static func drawToilet(in c: inout GraphicsContext) {
+        // Side view on the floor (origin = floor under the seat): pedestal, bowl with an open seat, tank with a lid behind.
+        let white = Color(white: 0.95), grey = Color(white: 0.62), water = Color(red: 0.7, green: 0.85, blue: 1.0)
+        var ped = Path(); ped.move(to: CGPoint(x: -24, y: 0)); ped.addLine(to: CGPoint(x: 24, y: 0)); ped.addLine(to: CGPoint(x: 18, y: -34)); ped.addLine(to: CGPoint(x: -18, y: -34)); ped.closeSubpath()
+        c.fill(ped, with: .color(white)); c.stroke(ped, with: .color(grey), lineWidth: 1.5)
+        c.fill(Path(roundedRect: CGRect(x: 22, y: -96, width: 30, height: 62), cornerRadius: 4), with: .color(white))
+        c.stroke(Path(roundedRect: CGRect(x: 22, y: -96, width: 30, height: 62), cornerRadius: 4), with: .color(grey), lineWidth: 1.5)
+        c.fill(Path(roundedRect: CGRect(x: 19, y: -102, width: 36, height: 8), cornerRadius: 3), with: .color(white))
+        c.stroke(Path(roundedRect: CGRect(x: 19, y: -102, width: 36, height: 8), cornerRadius: 3), with: .color(grey), lineWidth: 1.5)
+        c.fill(Path(roundedRect: CGRect(x: 44, y: -108, width: 8, height: 6), cornerRadius: 2), with: .color(grey))
+        let bowl = Path(ellipseIn: CGRect(x: -36, y: -46, width: 68, height: 26))
+        c.fill(bowl, with: .color(white)); c.stroke(bowl, with: .color(grey), lineWidth: 1.5)
+        c.fill(Path(ellipseIn: CGRect(x: -26, y: -41, width: 48, height: 14)), with: .color(water))
+        c.stroke(Path(ellipseIn: CGRect(x: -30, y: -44, width: 56, height: 20)), with: .color(grey.opacity(0.7)), lineWidth: 1.2)
+    }
+    static func drawNewspaper(t: Double, still: Bool, in c: inout GraphicsContext) {
+        // Held up in front (no hands: it floats), rustling a little.
+        var n = c; n.translateBy(x: 16, y: 6 + (still ? 0 : sin(t * 3) * 1.5)); n.rotate(by: .degrees(-6))
+        let paper = Path(CGRect(x: -34, y: -30, width: 68, height: 50))
+        n.fill(paper, with: .color(Color(white: 0.92))); n.stroke(paper, with: .color(Color(white: 0.4)), lineWidth: 1.2)
+        var fold = Path(); fold.move(to: CGPoint(x: 0, y: -30)); fold.addLine(to: CGPoint(x: 0, y: 20)); n.stroke(fold, with: .color(Color(white: 0.6)), lineWidth: 1)
+        n.fill(Path(CGRect(x: -30, y: -26, width: 26, height: 5)), with: .color(Color(white: 0.2)))
+        var lines = Path()
+        for (x0, w) in [(-30.0, 26.0), (4.0, 26.0)] { for k in 0..<5 { let y = -16 + Double(k) * 7; lines.move(to: CGPoint(x: x0, y: y)); lines.addLine(to: CGPoint(x: x0 + w * (k == 4 ? 0.6 : 1), y: y)) } }
+        n.stroke(lines, with: .color(Color(white: 0.55)), lineWidth: 1.5)
+    }
+    static func drawTable(_ s: CritterEngine.Snapshot, paddleL: Double, paddleR: Double, t: Double, in ctx: inout GraphicsContext) {
+        let a = s.area, u = s.unit, r = s.drawRadius, top = s.groundY - r * 0.9 + r * 0.9   // the body floats 0.9R above the floor: the table top sits under it
+        let tableTop = s.groundY - r * 0.05
+        ctx.fill(Path(CGRect(x: a.minX + 10 * u, y: tableTop, width: a.width - 20 * u, height: 10 * u)), with: .color(Color(red: 0.1, green: 0.45, blue: 0.3)))
+        ctx.fill(Path(CGRect(x: a.minX + 10 * u, y: tableTop, width: a.width - 20 * u, height: 2 * u)), with: .color(.white.opacity(0.85)))
+        for lx in [a.minX + 30 * u, a.maxX - 30 * u] { ctx.fill(Path(CGRect(x: lx - 3 * u, y: tableTop + 10 * u, width: 6 * u, height: 12 * u)), with: .color(Color(white: 0.3))) }
+        let mid = a.midX
+        ctx.fill(Path(CGRect(x: mid - 1.5 * u, y: tableTop - 22 * u, width: 3 * u, height: 22 * u)), with: .color(Color(white: 0.85)))
+        var net = Path(); for k in 0..<5 { net.move(to: CGPoint(x: mid - 10 * u, y: tableTop - 20 * u + Double(k) * 5 * u)); net.addLine(to: CGPoint(x: mid + 10 * u, y: tableTop - 20 * u + Double(k) * 5 * u)) }
+        ctx.stroke(net, with: .color(.white.opacity(0.6)), lineWidth: 1 * u)
+        _ = top
+        for (side, swing) in [(-1.0, paddleL), (1.0, paddleR)] {
+            var p = ctx; p.translateBy(x: side < 0 ? a.minX + 6 * u : a.maxX - 6 * u, y: tableTop - 30 * u); p.rotate(by: .degrees(side * (-35 + 70 * swing)))
+            p.fill(Path(ellipseIn: CGRect(x: -14 * u, y: -22 * u, width: 28 * u, height: 32 * u)), with: .color(side < 0 ? Color(red: 0.85, green: 0.2, blue: 0.2) : Color(white: 0.15)))
+            p.fill(Path(roundedRect: CGRect(x: -4 * u, y: 8 * u, width: 8 * u, height: 22 * u), cornerRadius: 3 * u), with: .color(Color(red: 0.75, green: 0.55, blue: 0.3)))
+        }
+    }
+    static func goalGeometry(_ s: CritterEngine.Snapshot) -> (x0: Double, x1: Double, top: Double, base: Double, depth: Double) {
+        // The goal stands on the far floor (z = 1), where the body's bottom is groundY − 100u; drawn at 0.42 scale.
+        let a = s.area, u = s.unit, r0 = s.drawRadius / max(0.4, 1 - 0.6 * s.z)
+        // s.groundY already rises with the body's depth; take it back to the near floor first, then out to z = 1.
+        let k = 0.42, gx = a.minX + a.width * 0.78, base = s.groundY + s.z * 100 * u - 100 * u
+        let w = 110 * u * k * 2, h = r0 * 2.6 * k
+        return (gx - w / 2, gx + w / 2, base - h, base, 10 * u * k)
+    }
+    static func drawGoal(_ s: CritterEngine.Snapshot, netHit: Double, t: Double, in ctx: inout GraphicsContext) {
+        let g = goalGeometry(s), a = s.area, u = s.unit
+        let wob = netHit > 0.01 && !s.still ? sin(t * 22) * 3 * u * netHit : 0
+        var back = Path()
+        for kk in 0...5 { let y = g.top + Double(kk) * (g.base - g.top) / 5; back.move(to: CGPoint(x: g.x0 + g.depth + wob, y: y)); back.addLine(to: CGPoint(x: g.x1 - g.depth + wob, y: y)) }
+        for kk in 0...6 { let x = g.x0 + g.depth + Double(kk) * (g.x1 - g.x0 - 2 * g.depth) / 6; back.move(to: CGPoint(x: x + wob, y: g.top + 4 * u)); back.addLine(to: CGPoint(x: x + wob, y: g.base)) }
+        ctx.stroke(back, with: .color(.white.opacity(0.45)), lineWidth: max(0.6, 0.8 * u))
+        var frame = Path()
+        frame.move(to: CGPoint(x: g.x0, y: g.base)); frame.addLine(to: CGPoint(x: g.x0, y: g.top)); frame.addLine(to: CGPoint(x: g.x1, y: g.top)); frame.addLine(to: CGPoint(x: g.x1, y: g.base))
+        frame.move(to: CGPoint(x: g.x0, y: g.top)); frame.addLine(to: CGPoint(x: g.x0 + g.depth, y: g.top + 4 * u)); frame.addLine(to: CGPoint(x: g.x1 - g.depth, y: g.top + 4 * u)); frame.addLine(to: CGPoint(x: g.x1, y: g.top))
+        ctx.stroke(frame, with: .color(.white), style: StrokeStyle(lineWidth: max(1.5, 2.2 * u), lineCap: .round, lineJoin: .round))
+        var line = Path(); line.move(to: CGPoint(x: a.minX, y: g.base + 2 * u)); line.addLine(to: CGPoint(x: a.maxX, y: g.base + 2 * u))
+        ctx.stroke(line, with: .color(.white.opacity(0.35)), style: StrokeStyle(lineWidth: max(0.8, 1 * u), dash: [6 * u, 4 * u]))
+    }
+    static func drawNetFront(_ s: CritterEngine.Snapshot, netHit: Double, t: Double, in ctx: inout GraphicsContext) {
+        // The side netting, drawn over the body once it is in: that is what makes the goal read as "in".
+        let g = goalGeometry(s), u = s.unit
+        let wob = netHit > 0.01 && !s.still ? sin(t * 22) * 3 * u * netHit : 0
+        var net = Path()
+        for kk in 0...6 { let y = g.top + Double(kk) * (g.base - g.top) / 6; net.move(to: CGPoint(x: g.x0 + wob, y: y)); net.addLine(to: CGPoint(x: g.x1 + wob, y: y)) }
+        for kk in 0...8 { let x = g.x0 + Double(kk) * (g.x1 - g.x0) / 8; net.move(to: CGPoint(x: x + wob, y: g.top)); net.addLine(to: CGPoint(x: x + wob, y: g.base)) }
+        ctx.stroke(net, with: .color(.white.opacity(0.7)), lineWidth: max(0.6, 0.9 * u))
+    }
+    static func drawBoot(_ s: CritterEngine.Snapshot, presence: Double, swing: Double, in ctx: inout GraphicsContext) {
+        // A leg from the left: hip off-panel, thigh, knee, shin and a sneaker. Winds back, then snaps through from the hip
+        // with the knee straightening — the way a real kick reads.
+        let r = s.drawRadius, u = s.unit
+        let hip = CGPoint(x: s.anchorX - r * 2.6 - (1 - presence) * r * 4, y: s.groundY - r * 2.5)
+        let wind = swing < 0.5 ? swing / 0.5 : 1, snap = swing < 0.5 ? 0 : (swing - 0.5) / 0.5
+        let thighDeg = 72 - 34 * wind + 88 * snap          // hip angle: 72° = hanging down-forward, back to 38°, through to 126°
+        let kneeDeg = 40 * wind - 40 * snap * 1.0            // knee bends on the wind-up, straightens on the strike
+        let thighLen = r * 1.25, shinLen = r * 1.15, thick = 26 * u
+        let ta = thighDeg * .pi / 180, knee = CGPoint(x: hip.x + cos(ta) * thighLen, y: hip.y + sin(ta) * thighLen)
+        let sa = (thighDeg - kneeDeg) * .pi / 180, ankle = CGPoint(x: knee.x + cos(sa) * shinLen, y: knee.y + sin(sa) * shinLen)
+        let trouser = Color(red: 0.22, green: 0.3, blue: 0.5), edge = Color(red: 0.12, green: 0.17, blue: 0.3)
+        var leg = Path(); leg.move(to: hip); leg.addLine(to: knee); leg.addLine(to: ankle)
+        ctx.stroke(leg, with: .color(edge), style: StrokeStyle(lineWidth: thick + 3 * u, lineCap: .round, lineJoin: .round))
+        ctx.stroke(leg, with: .color(trouser), style: StrokeStyle(lineWidth: thick, lineCap: .round, lineJoin: .round))
+        // Sneaker, hinged at the ankle and pointing along the shin.
+        var shoe = ctx; shoe.translateBy(x: ankle.x, y: ankle.y); shoe.rotate(by: .radians(sa - .pi / 2 + 0.2))
+        let L = 46 * u, H = 20 * u
+        var sole = Path(); sole.addRoundedRect(in: CGRect(x: -L * 0.35, y: H * 0.55, width: L, height: H * 0.45), cornerSize: CGSize(width: 3 * u, height: 3 * u))
+        shoe.fill(sole, with: .color(Color(white: 0.25)))
+        var upper = Path()
+        upper.move(to: CGPoint(x: -L * 0.35, y: H * 0.6)); upper.addLine(to: CGPoint(x: -L * 0.35, y: -H * 0.25))
+        upper.addQuadCurve(to: CGPoint(x: L * 0.15, y: -H * 0.1), control: CGPoint(x: -L * 0.05, y: -H * 0.3))
+        upper.addQuadCurve(to: CGPoint(x: L * 0.65, y: H * 0.6), control: CGPoint(x: L * 0.6, y: H * 0.1)); upper.closeSubpath()
+        shoe.fill(upper, with: .color(Color(white: 0.96))); shoe.stroke(upper, with: .color(Color(white: 0.2)), lineWidth: max(1, 1.3 * u))
+        shoe.fill(Path(roundedRect: CGRect(x: L * 0.42, y: H * 0.1, width: L * 0.23, height: H * 0.5), cornerRadius: 3 * u), with: .color(Color(white: 0.85)))
+        var lace = Path(); for k in 0..<3 { let x = -L * 0.1 + Double(k) * L * 0.12; lace.move(to: CGPoint(x: x, y: -H * 0.05)); lace.addLine(to: CGPoint(x: x + L * 0.08, y: H * 0.25)) }
+        shoe.stroke(lace, with: .color(Color(white: 0.45)), lineWidth: max(0.8, 1 * u))
+        shoe.fill(Path(CGRect(x: -L * 0.35, y: H * 0.4, width: L, height: H * 0.16)), with: .color(Color(red: 0.85, green: 0.2, blue: 0.2)))
+    }
+    static func drawConfetti(_ s: CritterEngine.Snapshot, amount: Double, t: Double, in ctx: inout GraphicsContext) {
+        let a = s.area, u = s.unit
+        let colors = [Color(red: 0.95, green: 0.3, blue: 0.4), Color(red: 1.0, green: 0.85, blue: 0.3), Color(red: 0.3, green: 0.8, blue: 0.5), Color(red: 0.35, green: 0.6, blue: 1.0), Color(red: 0.8, green: 0.45, blue: 1.0)]
+        for i in 0..<42 {
+            let h = hash(i, 7), fall = s.still ? 0.5 : (t * (0.18 + 0.12 * h) + h * 3).truncatingRemainder(dividingBy: 1)
+            let x = a.minX + a.width * hash(i, 3) + (s.still ? 0 : sin(t * 3 + Double(i)) * 8 * u), y = a.minY - 20 * u + fall * (a.height + 40 * u)
+            var c = ctx; c.translateBy(x: x, y: y); c.rotate(by: .radians(s.still ? 0.5 : t * 5 + Double(i)))
+            c.fill(Path(CGRect(x: -3 * u, y: -2 * u, width: 6 * u, height: 4 * u)), with: .color(colors[i % colors.count].opacity(0.9 * amount)))
+        }
+    }
+    static func drawMissCloud(_ s: CritterEngine.Snapshot, t: Double, in ctx: inout GraphicsContext) {
+        // A grey grumble of a cloud over the goal, with rain lines: the crowd's disappointment.
+        let a = s.area, u = s.unit, cx = a.maxX - 28 * u, cy = a.minY + 26 * u
+        var cloud = Path()
+        for (dx, dy, k) in [(-1.3, 0.2, 0.8), (0.0, -0.2, 1.0), (1.3, 0.25, 0.75), (0.6, 0.5, 0.7), (-0.6, 0.5, 0.7)] { let r = 12 * u; cloud.addEllipse(in: CGRect(x: cx + dx * r - r * k, y: cy + dy * r - r * k, width: 2 * r * k, height: 2 * r * k)) }
+        ctx.fill(cloud, with: .color(Color(white: 0.45).opacity(0.9)))
+        var drops = Path()
+        for k in 0..<4 { let ph = s.still ? 0.4 : (t * 1.5 + Double(k) * 0.25).truncatingRemainder(dividingBy: 1), x = cx - 14 * u + Double(k) * 9 * u, y = cy + 12 * u + ph * 22 * u; drops.move(to: CGPoint(x: x, y: y)); drops.addLine(to: CGPoint(x: x, y: y + 5 * u)) }
+        ctx.stroke(drops, with: .color(Color(red: 0.55, green: 0.7, blue: 0.9).opacity(0.8)), style: StrokeStyle(lineWidth: max(1, 1.4 * u), lineCap: .round))
+    }
+    static func drawScoreText(_ s: CritterEngine.Snapshot, _ text: String, goal: Bool, t: Double, in ctx: inout GraphicsContext) {
+        let a = s.area, u = s.unit
+        let bounce = goal && !s.still ? 1 + 0.08 * sin(t * 8) : 1
+        var c = ctx; c.translateBy(x: a.midX, y: a.minY + 34 * u); c.scaleBy(x: bounce, y: bounce)
+        let font = Font.system(size: (goal ? 26 : 18) * u * 1.15, weight: .heavy, design: .rounded)
+        for (dx, dy) in [(-1.5, 0.0), (1.5, 0.0), (0.0, -1.5), (0.0, 1.5)] { c.draw(Text(text).font(font).foregroundColor(Color(white: 0.1)), at: CGPoint(x: dx * u, y: dy * u), anchor: .center) }
+        c.draw(Text(text).font(font).foregroundColor(goal ? Color(red: 1, green: 0.85, blue: 0.25) : Color(white: 0.75)), at: .zero, anchor: .center)
+    }
+    static func wallHeight(_ s: CritterEngine.Snapshot) -> Double { s.drawRadius * 1.15 }
+    static func drawWall(_ s: CritterEngine.Snapshot, in ctx: inout GraphicsContext) {
+        // A garden wall along the back: round trees behind it, brick courses, grass along the top. The cat walks on top.
+        let a = s.area, u = s.unit, h = wallHeight(s), top = s.groundY - h
+        for (i, fx) in [0.12, 0.42, 0.7, 0.93].enumerated() {
+            let cx = a.minX + a.width * fx, r = (26 + Double(i % 2) * 10) * u, trunkTop = top - r * 0.6
+            ctx.fill(Path(CGRect(x: cx - 3 * u, y: trunkTop, width: 6 * u, height: top - trunkTop + 2 * u)), with: .color(Color(red: 0.45, green: 0.3, blue: 0.18)))
+            var crown = Path()
+            for (dx, dy, k) in [(0.0, -0.9, 1.0), (-0.8, -0.4, 0.8), (0.8, -0.4, 0.8), (-0.4, 0.1, 0.7), (0.4, 0.1, 0.7)] { crown.addEllipse(in: CGRect(x: cx + dx * r - r * k, y: trunkTop + dy * r - r * k, width: 2 * r * k, height: 2 * r * k)) }
+            ctx.fill(crown, with: .color([Color(red: 0.3, green: 0.6, blue: 0.3), Color(red: 0.38, green: 0.68, blue: 0.32)][i % 2]))
+        }
+        ctx.fill(Path(CGRect(x: a.minX - 20 * u, y: top, width: a.width + 40 * u, height: h + 4 * u)), with: .color(Color(red: 0.72, green: 0.52, blue: 0.42)))
+        var mortar = Path()
+        let course = h / 4
+        for row in 0..<4 {
+            let y = top + Double(row) * course
+            mortar.move(to: CGPoint(x: a.minX - 20 * u, y: y)); mortar.addLine(to: CGPoint(x: a.maxX + 20 * u, y: y))
+            var x = a.minX + (row % 2 == 0 ? 0 : 14 * u)
+            while x < a.maxX + 20 * u { mortar.move(to: CGPoint(x: x, y: y)); mortar.addLine(to: CGPoint(x: x, y: y + course)); x += 28 * u }
+        }
+        ctx.stroke(mortar, with: .color(Color(red: 0.55, green: 0.38, blue: 0.3)), lineWidth: 1.2 * u)
+        ctx.fill(Path(CGRect(x: a.minX - 20 * u, y: top - 3 * u, width: a.width + 40 * u, height: 5 * u)), with: .color(Color(red: 0.45, green: 0.68, blue: 0.3)))
+        var tufts = Path()
+        var x = a.minX + 4 * u
+        while x < a.maxX { for k in 0..<3 { tufts.move(to: CGPoint(x: x + Double(k) * 3 * u, y: top - 2 * u)); tufts.addLine(to: CGPoint(x: x + Double(k) * 3 * u + (k == 1 ? 0 : (k == 0 ? -2 : 2)) * u, y: top - 10 * u)) }; x += 18 * u }
+        ctx.stroke(tufts, with: .color(Color(red: 0.3, green: 0.55, blue: 0.22)), style: StrokeStyle(lineWidth: 1.5 * u, lineCap: .round))
+    }
+    static func drawMeadow(_ s: CritterEngine.Snapshot, in ctx: inout GraphicsContext) {
+        let a = s.area, u = s.unit
+        // Rolling hills behind, a green ground band, grass tufts and a few flowers in front.
+        for (i, hx) in [0.2, 0.62, 0.95].enumerated() {
+            let cx = a.minX + a.width * hx, hr = (70 + Double(i % 2) * 30) * u
+            ctx.fill(Path(ellipseIn: CGRect(x: cx - hr, y: s.groundY - 20 * u - hr * 0.55, width: 2 * hr, height: hr * 1.1)), with: .color(Color(red: 0.45, green: 0.72, blue: 0.35)))
+        }
+        ctx.fill(Path(CGRect(x: a.minX - 20 * u, y: s.groundY - 3 * u, width: a.width + 40 * u, height: 26 * u)), with: .color(Color(red: 0.35, green: 0.62, blue: 0.28)))
+        var tufts = Path()
+        var x = a.minX + 6 * u
+        while x < a.maxX { for k in 0..<3 { tufts.move(to: CGPoint(x: x + Double(k) * 3 * u, y: s.groundY + 2 * u)); tufts.addLine(to: CGPoint(x: x + Double(k) * 3 * u + (k == 1 ? 0 : (k == 0 ? -2 : 2)) * u, y: s.groundY - 8 * u)) }; x += 22 * u }
+        ctx.stroke(tufts, with: .color(Color(red: 0.25, green: 0.5, blue: 0.2)), style: StrokeStyle(lineWidth: 1.5 * u, lineCap: .round))
+        for (i, fx) in [0.12, 0.38, 0.7, 0.88].enumerated() {
+            let cx = a.minX + a.width * fx, cy = s.groundY - 6 * u
+            var stem = Path(); stem.move(to: CGPoint(x: cx, y: cy + 8 * u)); stem.addLine(to: CGPoint(x: cx, y: cy))
+            ctx.stroke(stem, with: .color(Color(red: 0.25, green: 0.5, blue: 0.2)), lineWidth: 1.2 * u)
+            for k in 0..<5 { let ang = Double(k) * .pi * 2 / 5; ctx.fill(Path(ellipseIn: CGRect(x: cx + cos(ang) * 3 * u - 2 * u, y: cy + sin(ang) * 3 * u - 2 * u, width: 4 * u, height: 4 * u)), with: .color([Color(red: 1, green: 0.85, blue: 0.3), Color(red: 1, green: 0.5, blue: 0.6), Color.white, Color(red: 0.6, green: 0.6, blue: 1)][i])) }
+            ctx.fill(Path(ellipseIn: CGRect(x: cx - 1.5 * u, y: cy - 1.5 * u, width: 3 * u, height: 3 * u)), with: .color(Color(red: 0.9, green: 0.6, blue: 0.1)))
+        }
+    }
+    static func drawLamp(_ s: CritterEngine.Snapshot, amount: Double, on: Bool, finger: Double, in c: inout GraphicsContext) {
+        // A wall switch plate to the upper left, and the glove finger that comes in to press it.
+        var w = c; w.translateBy(x: -110, y: -120 + (1 - amount) * -60)
+        w.fill(Path(roundedRect: CGRect(x: -16, y: -22, width: 32, height: 44), cornerRadius: 4), with: .color(Color(white: 0.9)))
+        w.stroke(Path(roundedRect: CGRect(x: -16, y: -22, width: 32, height: 44), cornerRadius: 4), with: .color(Color(white: 0.45)), lineWidth: 1.5)
+        w.fill(Path(roundedRect: CGRect(x: -7, y: on ? -14 : -2, width: 14, height: 16), cornerRadius: 3), with: .color(on ? Color(red: 1, green: 0.85, blue: 0.3) : Color(white: 0.6)))
+        for dy in [-17.0, 17.0] { w.fill(Path(ellipseIn: CGRect(x: -1.5, y: dy - 1.5, width: 3, height: 3)), with: .color(Color(white: 0.5))) }
+        if finger > 0.01 {
+            var h = c; h.translateBy(x: -110 + 70 * (1 - finger), y: -128 - 40 * (1 - finger)); h.rotate(by: .degrees(180))
+            let glove = Color(white: 0.98), line = Color(white: 0.12)
+            var p = Path()
+            p.addRoundedRect(in: CGRect(x: -16, y: -8, width: 30, height: 24), cornerSize: CGSize(width: 8, height: 8))
+            for (i, y) in [-4.0, 3.0, 10.0].enumerated() { p.addRoundedRect(in: CGRect(x: 8, y: y, width: 14 - Double(i) * 2, height: 7), cornerSize: CGSize(width: 3.5, height: 3.5)) }
+            p.addRoundedRect(in: CGRect(x: 8, y: -14, width: 30, height: 8), cornerSize: CGSize(width: 4, height: 4))
+            p.addRoundedRect(in: CGRect(x: -6, y: -20, width: 8, height: 16), cornerSize: CGSize(width: 4, height: 4))
+            h.fill(p, with: .color(glove)); h.stroke(p, with: .color(line), style: StrokeStyle(lineWidth: 1.6, lineJoin: .round))
+            var cuff = Path(); cuff.addRoundedRect(in: CGRect(x: -26, y: -8, width: 12, height: 24), cornerSize: CGSize(width: 3, height: 3))
+            h.fill(cuff, with: .color(Color(red: 0.25, green: 0.45, blue: 0.9))); h.stroke(cuff, with: .color(line), lineWidth: 1.6)
+        }
+    }
+    static func drawGlowHalo(_ s: CritterEngine.Snapshot, amount: Double, t: Double, in ctx: inout GraphicsContext) {
+        // Light spills around the body: a soft disc and rays, drawn behind it.
+        let r = s.drawRadius, pulse = s.still ? 1 : 1 + 0.04 * sin(t * 9)
+        for (k, a) in [(2.6, 0.10), (1.9, 0.16), (1.4, 0.22)] { ctx.fill(Path(ellipseIn: CGRect(x: s.center.x - r * k * pulse, y: s.center.y - r * k * pulse, width: 2 * r * k * pulse, height: 2 * r * k * pulse)), with: .color(Color(red: 1, green: 0.9, blue: 0.4).opacity(a * amount))) }
+        var rays = Path()
+        for i in 0..<12 { let ang = Double(i) * .pi / 6 + (s.still ? 0 : t * 0.4), r0 = r * 1.5, r1 = r * (2.4 + Double(i % 2) * 0.5); rays.move(to: CGPoint(x: s.center.x + cos(ang) * r0, y: s.center.y + sin(ang) * r0)); rays.addLine(to: CGPoint(x: s.center.x + cos(ang) * r1, y: s.center.y + sin(ang) * r1)) }
+        ctx.stroke(rays, with: .color(Color(red: 1, green: 0.9, blue: 0.4).opacity(0.5 * amount)), style: StrokeStyle(lineWidth: max(1, 2 * s.unit), lineCap: .round))
+    }
+    static func drawCat(_ s: CritterEngine.Snapshot, x: Double, dir: Double, paw: Double, meow: Bool, sit: Bool, walking: Bool, t: Double, in ctx: inout GraphicsContext) {
+        // An orange tabby: striped body, white muzzle, red collar with a yellow bow, curling tail. Faces `dir` (−1 = left).
+        let r = s.drawRadius
+        var c = ctx; c.translateBy(x: x, y: s.groundY); c.scaleBy(x: r / 46 * dir, y: r / 46)
+        let orange = Color(red: 0.93, green: 0.64, blue: 0.32), stripe = Color(red: 0.78, green: 0.45, blue: 0.18), lineC = Color(white: 0.15)
+        let step = walking && !s.still ? sin(t * 9) : 0
+        // tail
+        var tail = Path(); tail.move(to: CGPoint(x: -46, y: -30)); tail.addCurve(to: CGPoint(x: -72, y: -78), control1: CGPoint(x: -70, y: -34), control2: CGPoint(x: -84, y: -60))
+        c.stroke(tail, with: .color(orange), style: StrokeStyle(lineWidth: 12, lineCap: .round)); c.stroke(tail, with: .color(lineC), style: StrokeStyle(lineWidth: 14, lineCap: .round)); c.stroke(tail, with: .color(orange), style: StrokeStyle(lineWidth: 11, lineCap: .round))
+        // legs
+        for (i, lx) in [-30.0, -12.0, 14.0, 30.0].enumerated() {
+            let lift = sit ? 0 : (i % 2 == 0 ? step : -step) * 5
+            var leg = Path(); leg.addRoundedRect(in: CGRect(x: lx - 7, y: -30 - lift, width: 14, height: sit && i < 2 ? 18 : 30), cornerSize: CGSize(width: 6, height: 6))
+            c.fill(leg, with: .color(orange)); c.stroke(leg, with: .color(lineC), lineWidth: 2)
+        }
+        // body
+        let body = Path(ellipseIn: CGRect(x: -52, y: -74, width: 96, height: sit ? 70 : 60))
+        c.fill(body, with: .color(orange)); c.stroke(body, with: .color(lineC), lineWidth: 2.4)
+        var stripes = Path(); for sx in [-36.0, -22.0, -8.0] { stripes.move(to: CGPoint(x: sx, y: -72)); stripes.addQuadCurve(to: CGPoint(x: sx + 6, y: -50), control: CGPoint(x: sx - 6, y: -60)) }
+        var sc2 = c; sc2.clip(to: body); sc2.stroke(stripes, with: .color(stripe), style: StrokeStyle(lineWidth: 5, lineCap: .round))
+        // head
+        let head = CGPoint(x: 26, y: -78)
+        var ears = Path()
+        ears.move(to: CGPoint(x: head.x - 26, y: head.y - 8)); ears.addLine(to: CGPoint(x: head.x - 22, y: head.y - 40)); ears.addLine(to: CGPoint(x: head.x - 2, y: head.y - 22)); ears.closeSubpath()
+        ears.move(to: CGPoint(x: head.x + 26, y: head.y - 8)); ears.addLine(to: CGPoint(x: head.x + 22, y: head.y - 40)); ears.addLine(to: CGPoint(x: head.x + 2, y: head.y - 22)); ears.closeSubpath()
+        c.fill(ears, with: .color(orange)); c.stroke(ears, with: .color(lineC), style: StrokeStyle(lineWidth: 2.4, lineJoin: .round))
+        let face = Path(ellipseIn: CGRect(x: head.x - 32, y: head.y - 30, width: 64, height: 58))
+        c.fill(face, with: .color(orange)); c.stroke(face, with: .color(lineC), lineWidth: 2.4)
+        c.fill(Path(ellipseIn: CGRect(x: head.x - 16, y: head.y - 4, width: 32, height: 24)), with: .color(.white))
+        var fs = Path(); for sx in [-24.0, 18.0] { fs.move(to: CGPoint(x: head.x + sx, y: head.y - 26)); fs.addLine(to: CGPoint(x: head.x + sx + 4, y: head.y - 12)) }
+        c.stroke(fs, with: .color(stripe), style: StrokeStyle(lineWidth: 4, lineCap: .round))
+        if meow {
+            var e = Path()
+            for ex in [-13.0, 13.0] { e.move(to: CGPoint(x: head.x + ex - 6, y: head.y - 6)); e.addLine(to: CGPoint(x: head.x + ex, y: head.y - 12)); e.addLine(to: CGPoint(x: head.x + ex + 6, y: head.y - 6)) }
+            c.stroke(e, with: .color(lineC), style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+            var mouth = Path(); mouth.move(to: CGPoint(x: head.x - 7, y: head.y + 8)); mouth.addQuadCurve(to: CGPoint(x: head.x, y: head.y + 12), control: CGPoint(x: head.x - 4, y: head.y + 13)); mouth.addQuadCurve(to: CGPoint(x: head.x + 7, y: head.y + 8), control: CGPoint(x: head.x + 4, y: head.y + 13))
+            c.stroke(mouth, with: .color(lineC), style: StrokeStyle(lineWidth: 2.2, lineCap: .round))
+        } else {
+            for ex in [-13.0, 13.0] { c.fill(Path(ellipseIn: CGRect(x: head.x + ex - 7, y: head.y - 18, width: 14, height: 18)), with: .color(lineC)); c.fill(Path(ellipseIn: CGRect(x: head.x + ex - 4, y: head.y - 15, width: 5, height: 6)), with: .color(.white)) }
+            c.fill(Path(ellipseIn: CGRect(x: head.x - 4, y: head.y + 2, width: 8, height: 6)), with: .color(Color(red: 0.5, green: 0.3, blue: 0.2)))
+        }
+        var wh = Path(); for (sx, dy) in [(-1.0, 4.0), (-1.0, 10.0), (1.0, 4.0), (1.0, 10.0)] { wh.move(to: CGPoint(x: head.x + sx * 16, y: head.y + dy)); wh.addLine(to: CGPoint(x: head.x + sx * 40, y: head.y + dy - 3)) }
+        c.stroke(wh, with: .color(lineC), lineWidth: 1.5)
+        // collar and bow
+        c.fill(Path(roundedRect: CGRect(x: head.x - 24, y: head.y + 24, width: 48, height: 8), cornerRadius: 4), with: .color(Color(red: 0.85, green: 0.15, blue: 0.15)))
+        var bow = Path()
+        bow.move(to: CGPoint(x: head.x, y: head.y + 30)); bow.addLine(to: CGPoint(x: head.x - 14, y: head.y + 22)); bow.addLine(to: CGPoint(x: head.x - 14, y: head.y + 38)); bow.closeSubpath()
+        bow.move(to: CGPoint(x: head.x, y: head.y + 30)); bow.addLine(to: CGPoint(x: head.x + 14, y: head.y + 22)); bow.addLine(to: CGPoint(x: head.x + 14, y: head.y + 38)); bow.closeSubpath()
+        c.fill(bow, with: .color(Color(red: 1, green: 0.85, blue: 0.2))); c.stroke(bow, with: .color(lineC), style: StrokeStyle(lineWidth: 1.6, lineJoin: .round))
+        c.fill(Path(ellipseIn: CGRect(x: head.x - 4, y: head.y + 26, width: 8, height: 8)), with: .color(Color(red: 0.9, green: 0.65, blue: 0.1)))
+        if meow {
+            // The cat's own little bubble, since it is not gluu bot talking.
+            var b = ctx; b.translateBy(x: x, y: s.groundY - r * 3.1)
+            let w = 70 * s.unit, h = 20 * s.unit
+            b.fill(Path(roundedRect: CGRect(x: -w / 2, y: -h / 2, width: w, height: h), cornerRadius: 7 * s.unit), with: .color(.white.opacity(0.96)))
+            b.stroke(Path(roundedRect: CGRect(x: -w / 2, y: -h / 2, width: w, height: h), cornerRadius: 7 * s.unit), with: .color(.black.opacity(0.12)), lineWidth: 0.5)
+            b.draw(Text("เหมียวว >w<").font(.system(size: 11 * s.unit * 1.15, weight: .medium, design: .monospaced)).foregroundColor(Color(white: 0.1)), at: .zero, anchor: .center)
+        }
+    }
+    static func drawCatPaw(_ s: CritterEngine.Snapshot, x: Double, dir: Double, paw: Double, in ctx: inout GraphicsContext) {
+        // The front paw swinging out toward the body (drawn over everything so it reads as the hit).
+        let r = s.drawRadius
+        var c = ctx; c.translateBy(x: x, y: s.groundY); c.scaleBy(x: r / 46 * dir, y: r / 46)
+        let swing = sin(paw * .pi)
+        var p = c; p.translateBy(x: 40, y: -58); p.rotate(by: .degrees(-20 + 80 * swing))
+        let leg = Path(roundedRect: CGRect(x: -7, y: -4, width: 44, height: 14), cornerRadius: 7)
+        p.fill(leg, with: .color(Color(red: 0.93, green: 0.64, blue: 0.32))); p.stroke(leg, with: .color(Color(white: 0.15)), lineWidth: 2)
+        p.fill(Path(ellipseIn: CGRect(x: 30, y: -6, width: 16, height: 18)), with: .color(Color(red: 0.93, green: 0.64, blue: 0.32))); p.stroke(Path(ellipseIn: CGRect(x: 30, y: -6, width: 16, height: 18)), with: .color(Color(white: 0.15)), lineWidth: 2)
+    }
+    static func drawTowel(in c: inout GraphicsContext) {
+        var towel = Path(); towel.addRoundedRect(in: CGRect(x: -70, y: 40, width: 140, height: 14), cornerSize: CGSize(width: 4, height: 4))
+        c.fill(towel, with: .color(Color(red: 0.95, green: 0.55, blue: 0.45)))
+        var stripes = Path()
+        for i in stride(from: -60, through: 60, by: 20) { stripes.addRect(CGRect(x: Double(i), y: 40, width: 8, height: 14)) }
+        c.fill(stripes, with: .color(.white.opacity(0.6)))
+    }
+    static func drawBag(amount: Double, t: Double, still: Bool, in c: inout GraphicsContext) {
+        // A snack bag on the floor to the right: crimped top, a band, three crisps peeking out.
+        var b = c; b.translateBy(x: 96, y: 46); b.scaleBy(x: 0.35 + 0.65 * amount, y: 0.35 + 0.65 * amount)
+        let orange = Color(red: 0.95, green: 0.55, blue: 0.2), band = Color(red: 0.98, green: 0.85, blue: 0.4)
+        var bag = Path(); bag.move(to: CGPoint(x: -22, y: 0)); bag.addLine(to: CGPoint(x: 22, y: 0)); bag.addLine(to: CGPoint(x: 20, y: -46))
+        for i in 0..<5 { bag.addLine(to: CGPoint(x: 20 - Double(i) * 10 - 5, y: i % 2 == 0 ? -52 : -46)) }
+        bag.addLine(to: CGPoint(x: -20, y: -46)); bag.closeSubpath()
+        b.fill(bag, with: .color(orange))
+        b.fill(Path(CGRect(x: -20, y: -32, width: 40, height: 12)), with: .color(band))
+        b.stroke(bag, with: .color(Color(red: 0.6, green: 0.3, blue: 0.1)), lineWidth: 1.5)
+        for (dx, dy) in [(-8.0, -54.0), (2.0, -58.0), (11.0, -53.0)] { b.fill(Path(ellipseIn: CGRect(x: dx - 5, y: dy - 3, width: 10, height: 6)), with: .color(Color(red: 0.98, green: 0.78, blue: 0.35))) }
+    }
+    static func drawHand(kind: Int, phase: Double, in c: inout GraphicsContext) {
+        // The classic RPG cursor glove: white, black outline, a cuff. Pats from above with the fingers, scratches with the index.
+        var h = c
+        if kind == 1 { h.translateBy(x: 4, y: -66 - 24 * (1 - phase)); h.rotate(by: .degrees(-100 + 12 * phase)) }
+        else { h.translateBy(x: 34 + phase * 3, y: 34 + phase * 1.5); h.rotate(by: .degrees(-150)) }
+        let glove = Color(white: 0.98), line = Color(white: 0.12)
+        var p = Path()
+        // palm and the three folded fingers
+        p.addRoundedRect(in: CGRect(x: -16, y: -8, width: 30, height: 24), cornerSize: CGSize(width: 8, height: 8))
+        for (i, y) in [-4.0, 3.0, 10.0].enumerated() { p.addRoundedRect(in: CGRect(x: 8, y: y, width: 14 - Double(i) * 2, height: 7), cornerSize: CGSize(width: 3.5, height: 3.5)) }
+        // index finger pointing
+        p.addRoundedRect(in: CGRect(x: 8, y: -14, width: 30, height: 8), cornerSize: CGSize(width: 4, height: 4))
+        // thumb
+        p.addRoundedRect(in: CGRect(x: -6, y: -20, width: 8, height: 16), cornerSize: CGSize(width: 4, height: 4))
+        h.fill(p, with: .color(glove)); h.stroke(p, with: .color(line), style: StrokeStyle(lineWidth: 1.6, lineJoin: .round))
+        var cuff = Path(); cuff.addRoundedRect(in: CGRect(x: -26, y: -8, width: 12, height: 24), cornerSize: CGSize(width: 3, height: 3))
+        h.fill(cuff, with: .color(Color(red: 0.25, green: 0.45, blue: 0.9))); h.stroke(cuff, with: .color(line), lineWidth: 1.6)
+        var seams = Path(); seams.move(to: CGPoint(x: -2, y: -2)); seams.addLine(to: CGPoint(x: 6, y: -2)); seams.move(to: CGPoint(x: -2, y: 5)); seams.addLine(to: CGPoint(x: 6, y: 5))
+        h.stroke(seams, with: .color(line.opacity(0.5)), lineWidth: 1)
+    }
+    static func drawBoard(t: Double, still: Bool, in c: inout GraphicsContext) {
+        var b = c; b.translateBy(x: 0, y: 46)
+        let deck = Path(roundedRect: CGRect(x: -58, y: 2, width: 116, height: 8), cornerRadius: 4)
+        b.fill(deck, with: .color(Color(red: 0.55, green: 0.35, blue: 0.2)))
+        b.fill(Path(roundedRect: CGRect(x: -50, y: 2, width: 100, height: 3), cornerRadius: 1.5), with: .color(Color(white: 0.2)))
+        for wx in [-36.0, 36.0] {
+            b.fill(Path(ellipseIn: CGRect(x: wx - 7, y: 10, width: 14, height: 14)), with: .color(Color(red: 0.95, green: 0.4, blue: 0.3)))
+            let a = still ? 0.5 : t * 12
+            var spoke = Path(); spoke.move(to: CGPoint(x: wx + cos(a) * 5, y: 17 + sin(a) * 5)); spoke.addLine(to: CGPoint(x: wx - cos(a) * 5, y: 17 - sin(a) * 5))
+            b.stroke(spoke, with: .color(.white.opacity(0.7)), lineWidth: 1.5)
+        }
+    }
+    static func drawKite(amount: Double, t: Double, still: Bool, in c: inout GraphicsContext) {
+        let sway = still ? 0 : sin(t * 1.4) * 10 * amount
+        let k = CGPoint(x: 70 + 70 * amount + sway, y: -70 - 150 * amount + (still ? 0 : sin(t * 2.1) * 6))
+        var line = Path(); line.move(to: CGPoint(x: 10, y: -40)); line.addQuadCurve(to: k, control: CGPoint(x: (10 + k.x) / 2 + 20, y: (-40 + k.y) / 2 + 30))
+        c.stroke(line, with: .color(.white.opacity(0.6)), lineWidth: 1.2)
+        var kite = c; kite.translateBy(x: k.x, y: k.y); kite.rotate(by: .degrees(20 + sway * 0.6))
+        var d = Path(); d.move(to: CGPoint(x: 0, y: -30)); d.addLine(to: CGPoint(x: 20, y: 0)); d.addLine(to: CGPoint(x: 0, y: 34)); d.addLine(to: CGPoint(x: -20, y: 0)); d.closeSubpath()
+        kite.fill(d, with: .color(Color(red: 0.95, green: 0.3, blue: 0.35)))
+        var half = Path(); half.move(to: CGPoint(x: 0, y: -30)); half.addLine(to: CGPoint(x: 20, y: 0)); half.addLine(to: CGPoint(x: 0, y: 34)); half.closeSubpath()
+        kite.fill(half, with: .color(Color(red: 1.0, green: 0.85, blue: 0.3)))
+        var spars = Path(); spars.move(to: CGPoint(x: 0, y: -30)); spars.addLine(to: CGPoint(x: 0, y: 34)); spars.move(to: CGPoint(x: -20, y: 0)); spars.addLine(to: CGPoint(x: 20, y: 0))
+        kite.stroke(spars, with: .color(ink.opacity(0.6)), lineWidth: 1.2)
+        var tail = Path(); tail.move(to: CGPoint(x: 0, y: 34))
+        for i in 1...4 { tail.addQuadCurve(to: CGPoint(x: (i % 2 == 0 ? -8 : 8) * amount, y: 34 + Double(i) * 12), control: CGPoint(x: (i % 2 == 0 ? 8 : -8) * amount, y: 34 + Double(i) * 12 - 6)) }
+        kite.stroke(tail, with: .color(.white.opacity(0.7)), lineWidth: 1.2)
+        for i in 1...3 { let p = CGPoint(x: (i % 2 == 0 ? -8 : 8) * amount, y: 34 + Double(i) * 12); kite.fill(Path(ellipseIn: CGRect(x: p.x - 4, y: p.y - 2.5, width: 8, height: 5)), with: .color(Color(red: 0.3, green: 0.7, blue: 1.0))) }
     }
     static func drawSpeedLines(amount: Double, t: Double, still: Bool, in c: inout GraphicsContext) {
         var p = Path()
@@ -1118,8 +1795,15 @@ struct CritterPlayground: View {
     @State private var holding = false
     @State private var levelTimer: Timer?
     @State private var lang: Mode = .th
-    private let moves: [(Critter.Move, String)] = [(.roll, "กลิ้ง"), (.hop, "เด้ง"), (.dribble, "ดริบเบิล"), (.throwUp, "โยนชนเพดาน"), (.pinball, "พินบอล"), (.wallClimb, "ปีนกำแพง"), (.zigzag, "ซิกแซก"), (.peek, "ยืดมอง"), (.shiver, "ตัวสั่น"), (.sway, "โยกตัว"), (.deep, "กลิ้งลึกเข้าไป")]
-    static let sceneNames: [(Critter.Scene, String)] = [(.inflate, "พองจนระเบิด แล้วเกิดใหม่"), (.lightning, "ฟ้าผ่า"), (.rainUmbrella, "ฝนตก มีร่ม"), (.rain, "ฝนตก ไม่มีร่ม"), (.balloon, "ลูกโป่งลอย"), (.manhole, "เปิดฝาท่อ โดดลงไป"), (.sneeze, "จาม น้ำมูกไหล"), (.hiccup, "สะอึก"), (.spinJump, "กระโดดหมุนตัว"), (.levitate, "นั่งสมาธิลอย"), (.ghost, "ผีโผล่หลอก"), (.shootingStar, "ดาวตก ขอพร"), (.box, "ซ่อนในกล่อง"), (.melt, "ร้อนจนละลาย"), (.freeze, "แข็งเป็นน้ำแข็ง"), (.trip, "สะดุดล้มตีลังกา"), (.flood, "น้ำท่วม ว่ายขึ้นฝั่ง"), (.plane, "ขึ้นเครื่องบิน โดดลงมา"), (.dance, "เต้นบนฟลอร์"), (.ninja, "ระเบิดควันนินจา หายตัว"), (.eat, "กินข้าว"), (.read, "อ่านหนังสือ"), (.heartEyes, "ตาเป็นหัวใจ")]
+    private let moves: [(Critter.Move, String)] = [(.roll, "กลิ้ง"), (.hop, "เด้ง"), (.dribble, "ดริบเบิล"), (.throwUp, "โยนชนเพดาน"), (.pinball, "พินบอล"), (.wallClimb, "ปีนกำแพง"), (.zigzag, "ซิกแซก"), (.peek, "ยืดมอง"), (.sway, "โยกตัว"), (.deep, "กลิ้งลึกเข้าไป")]
+    static let sceneCategories: [(String, [Critter.Scene])] = [
+        ("ร่างกาย", [.inflate, .sneeze, .hiccup, .lightning, .melt, .freeze]),
+        ("ธรรมชาติ", [.rainUmbrella, .rain, .balloon, .shootingStar, .kite, .beach]),
+        ("ผจญภัย", [.manhole, .plane, .flood, .roadkill, .box, .ninja, .clone, .skateboard, .toilet, .pingpong, .meadow, .football]),
+        ("อารมณ์และเพื่อน", [.spinJump, .levitate, .ghost, .dance, .crush, .catWalk, .catPlay, .eat, .snack, .read, .heartEyes, .pat, .chin]),
+        ("มุกการ์ตูน", [.eyePop, .tornado, .pancake, .rubber, .dash, .bulb])]
+    static func sceneName(_ s: Critter.Scene) -> String { (sceneNames + gagNames).first { $0.0 == s }?.1 ?? s.rawValue }
+    static let sceneNames: [(Critter.Scene, String)] = [(.inflate, "พองจนระเบิด แล้วเกิดใหม่"), (.lightning, "ฟ้าผ่า"), (.rainUmbrella, "ฝนตก มีร่ม"), (.rain, "ฝนตก ไม่มีร่ม"), (.balloon, "ลูกโป่งลอย"), (.manhole, "เปิดฝาท่อ โดดลงไป"), (.sneeze, "จาม น้ำมูกไหล"), (.hiccup, "สะอึก"), (.spinJump, "กระโดดหมุนตัว"), (.levitate, "นั่งสมาธิลอย"), (.ghost, "ผีโผล่หลอก"), (.shootingStar, "ดาวตก ขอพร"), (.box, "ซ่อนในกล่อง"), (.melt, "ร้อนจนละลาย"), (.freeze, "แข็งเป็นน้ำแข็ง"), (.flood, "น้ำท่วม ว่ายขึ้นฝั่ง"), (.plane, "ขึ้นเครื่องบิน โดดลงมา"), (.dance, "เต้นบนฟลอร์"), (.ninja, "ระเบิดควันนินจา หายตัว"), (.roadkill, "ข้ามถนน โดนรถทับ วิญญาณลอย"), (.clone, "แยกร่าง 4 ตัว"), (.beach, "หาดทราย นอนอาบแดด"), (.crush, "เจอสาว gluu bot แล้วเขิน"), (.snack, "ถุงขนม กินแล้วอ้วน"), (.pat, "ลูบหัว"), (.chin, "เกาคาง"), (.skateboard, "สเก็ตบอร์ด คิกฟลิป"), (.kite, "เล่นว่าว"), (.toilet, "เข้าห้องน้ำ โดนรถยกเปิด"), (.pingpong, "โดนตีปิงปอง"), (.meadow, "กลิ้งบนทุ่งหญ้า ช้าและเร็ว"), (.bulb, "โดนเปิดสวิตช์ กลายเป็นหลอดไฟ"), (.catWalk, "แมวส้มเดินผ่าน"), (.catPlay, "แมวเล่นด้วยเหมือนลูกบอล"), (.football, "โดนเตะพุ่งไปประตูไกล ๆ (สุ่มเข้า/ไม่เข้า)"), (.eat, "กินข้าว"), (.read, "อ่านหนังสือ"), (.heartEyes, "ตาเป็นหัวใจ")]
     static let gagNames: [(Critter.Scene, String)] = [(.eyePop, "ตาถลนพุ่งออก (Gear 5)"), (.tornado, "หมุนติ้วทอร์นาโด"), (.pancake, "ทั่งตกใส่ แบนแต๊ดแต๋"), (.rubber, "ตัวยางยืด (Nika)"), (.dash, "วิ่งหายวูบ บี๊บบี๊บ")]
     static let weatherNames: [(Critter.Weather, String)] = Critter.Weather.allCases.map { ($0, Critter.weatherNames[$0] ?? $0.rawValue) }
     private let moodNames: [Critter.Mood: String] = [.normal: "ปกติ", .bored: "เบื่อ", .thinking: "คิด", .sleepy: "ง่วง", .asleep: "หลับ", .curious: "สงสัย", .happy: "ดีใจ", .done: "เสร็จ", .shy: "เขิน", .sad: "เศร้า", .wow: "ว้าว", .startled: "ตกใจ", .worried: "กังวล", .dizzy: "เวียนหัว", .peek: "ยืดมอง", .cold: "สั่น", .listening: "ฟัง", .annoyed: "หงุดหงิด", .bye: "บอกลา", .back: "กลับมา", .hungry: "หิว", .sulky: "งอน", .loved: "รัก", .laugh: "หัวเราะ", .full: "อิ่ม", .hot: "ร้อน", .zen: "สงบ", .pant: "หอบ", .groove: "เต้น"]
@@ -1140,10 +1824,10 @@ struct CritterPlayground: View {
                 Text(["เงียบ", "ปกติ", "ขี้เล่น"][max(0, min(2, model.critterPlayfulness))]).font(.caption).foregroundStyle(.secondary)
                 Toggle("พูด", isOn: $model.critterSpeech).toggleStyle(.switch).controlSize(.mini)
             }
-            Text("ฉากพิเศษ (นาน ๆ เกิดเองที · กดดูได้เลย)").font(.caption).foregroundStyle(.secondary)
-            FlowButtons(items: CritterPlayground.sceneNames.map { (sc: (Critter.Scene, String)) -> (String, () -> Void) in (sc.1, { engine.perform(scene: sc.0) }) })
-            Text("มุกการ์ตูน").font(.caption).foregroundStyle(.secondary)
-            FlowButtons(items: CritterPlayground.gagNames.map { (sc: (Critter.Scene, String)) -> (String, () -> Void) in (sc.1, { engine.perform(scene: sc.0) }) })
+            ForEach(CritterPlayground.sceneCategories, id: \.0) { cat in
+                Text("ฉากพิเศษ · " + cat.0).font(.caption).foregroundStyle(.secondary)
+                FlowButtons(items: cat.1.map { (sc: Critter.Scene) -> (String, () -> Void) in (CritterPlayground.sceneName(sc), { engine.perform(scene: sc) }) })
+            }
             Text("อากาศ").font(.caption).foregroundStyle(.secondary)
             FlowButtons(items: CritterPlayground.weatherNames.map { (w: (Critter.Weather, String)) -> (String, () -> Void) in (w.1, { engine.setWeather(w.0 == .clear ? nil : w.0) }) } + [("ฝน+ร่ม", { engine.setWeather(.rain, umbrella: true) })])
             Text("ดูแล (ลากบนตัว = ลูบ · ดับเบิลคลิก = เล่นหัว · คลิกขวา = เมนู)").font(.caption).foregroundStyle(.secondary)
@@ -1177,7 +1861,7 @@ struct CritterPreviewCard: View {
     @State private var holding = false
     @State private var levelTimer: Timer?
     @State private var lang: Mode = .th
-    private let moves: [(Critter.Move, String)] = [(.roll, "กลิ้ง"), (.hop, "เด้ง"), (.dribble, "ดริบเบิล"), (.throwUp, "โยนชนเพดาน"), (.pinball, "พินบอล"), (.wallClimb, "ปีนกำแพง"), (.zigzag, "ซิกแซก"), (.peek, "ยืดมอง"), (.shiver, "ตัวสั่น"), (.sway, "โยกตัว"), (.deep, "กลิ้งลึกเข้าไป")]
+    private let moves: [(Critter.Move, String)] = [(.roll, "กลิ้ง"), (.hop, "เด้ง"), (.dribble, "ดริบเบิล"), (.throwUp, "โยนชนเพดาน"), (.pinball, "พินบอล"), (.wallClimb, "ปีนกำแพง"), (.zigzag, "ซิกแซก"), (.peek, "ยืดมอง"), (.sway, "โยกตัว"), (.deep, "กลิ้งลึกเข้าไป")]
     private let moods: [(Critter.Mood, String)] = [(.normal, "ปกติ"), (.happy, "ดีใจ"), (.shy, "เขิน"), (.sad, "เศร้า"), (.wow, "ว้าว"), (.startled, "ตกใจ"), (.worried, "กังวล"), (.dizzy, "เวียนหัว"), (.bored, "เบื่อ"), (.curious, "สงสัย"), (.sleepy, "ง่วง"), (.asleep, "หลับ"), (.cold, "สั่น"), (.annoyed, "หงุดหงิด"), (.peek, "ยืดมอง"), (.bye, "บอกลา"), (.back, "กลับมา"), (.hungry, "หิว"), (.sulky, "งอน"), (.loved, "รัก"), (.laugh, "หัวเราะ"), (.full, "อิ่ม"), (.hot, "ร้อน"), (.zen, "สงบ"), (.pant, "หอบ"), (.groove, "เต้น")]
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1188,8 +1872,11 @@ struct CritterPreviewCard: View {
                 CritterView(engine: engine)
             }.frame(width: engine.panelSize.width, height: engine.panelSize.height)
             HStack(spacing: 6) {
-                Menu("ฉากพิเศษ") { ForEach(CritterPlayground.sceneNames, id: \.0) { sc in Button(sc.1) { engine.perform(scene: sc.0) } } }
-                Menu("มุกการ์ตูน") { ForEach(CritterPlayground.gagNames, id: \.0) { sc in Button(sc.1) { engine.perform(scene: sc.0) } } }
+                Menu("ฉากพิเศษ") {
+                    ForEach(CritterPlayground.sceneCategories, id: \.0) { cat in
+                        Section(cat.0) { ForEach(cat.1, id: \.self) { sc in Button(CritterPlayground.sceneName(sc)) { engine.perform(scene: sc) } } }
+                    }
+                }
                 Menu("อากาศ") { ForEach(CritterPlayground.weatherNames, id: \.0) { w in Button(w.1) { engine.setWeather(w.0 == .clear ? nil : w.0) } }; Button("ฝนตก มีร่ม") { engine.setWeather(.rain, umbrella: true) } }
                 Menu("ท่า") { ForEach(moves, id: \.0) { mv in Button(mv.1) { engine.perform(mv.0) } } }
                 Menu("อารมณ์") { ForEach(moods, id: \.0) { m in Button(m.1) { engine.setMood(m.0, hold: 4) } } }
@@ -1248,6 +1935,15 @@ struct CritterPreviewCard: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { engine.cue(.done) }
     }
 }
+/// The chips in the click menu: dark text on a light pill, so they read on the white capsule with any appearance.
+struct MenuChip: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(Color(white: configuration.isPressed ? 0.3 : 0.1))
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(Color(white: configuration.isPressed ? 0.8 : 0.92), in: Capsule())
+    }
+}
 struct FlowButtons: View {
     let items: [(String, () -> Void)]
     var body: some View {
@@ -1281,7 +1977,7 @@ final class CritterPanel: NSPanel {
             guard self.frame.contains(m) else { return nil }
             let local = CGPoint(x: m.x - self.frame.minX, y: self.frame.maxY - m.y)
             // Let clicks through everywhere except on the body.
-            let onBody = self.engine.hit(local)
+            let onBody = self.engine.hit(local) || self.engine.menuRect().contains(local)
             if self.ignoresMouseEvents == onBody { self.ignoresMouseEvents = !onBody }
             return local
         }

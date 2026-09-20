@@ -16,8 +16,8 @@ cat > Veda.app/Contents/Info.plist <<'PLIST'
 <key>CFBundleDisplayName</key><string>gluu bot</string>
 <key>CFBundleExecutable</key><string>Veda</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.1.44</string>
-<key>CFBundleVersion</key><string>45</string>
+<key>CFBundleShortVersionString</key><string>0.1.53</string>
+<key>CFBundleVersion</key><string>54</string>
 <key>LSMinimumSystemVersion</key><string>15.0</string>
 <key>LSUIElement</key><true/>
 <key>NSMicrophoneUsageDescription</key><string>Veda ใช้ไมโครโฟนเมื่อคุณกด Fn ค้างเพื่อถอดเสียงบนเครื่อง</string>

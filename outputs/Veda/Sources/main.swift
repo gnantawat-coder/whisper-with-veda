@@ -256,6 +256,29 @@ final class Model: ObservableObject {
         didSet { UserDefaults.standard.set(snapShortcut.stored, forKey: "snapShortcut") }
     }
     @Published var recordingShortcut = false
+    @Published var talkKey: TalkKey? = TalkKey(stored: UserDefaults.standard.string(forKey: "talkKey") ?? "") {
+        didSet { UserDefaults.standard.set(talkKey?.stored ?? "", forKey: "talkKey") }
+    }
+    @Published var recordingTalkKey = false
+    private var talkKeyMonitor: Any?
+    /// Next single key pressed (a plain key, or a modifier on its own) becomes the push-to-talk key. Esc cancels.
+    func beginRecordingTalkKey() {
+        guard talkKeyMonitor == nil else { return }
+        recordingTalkKey = true
+        talkKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] e in
+            guard let self else { return e }
+            let code = Int64(e.keyCode)
+            if e.type == .keyDown { if code == 53 { self.endRecordingTalkKey(); return nil }; guard TalkKey.allowed(code) else { return nil }; self.talkKey = TalkKey(keyCode: code); self.endRecordingTalkKey(); return nil }
+            // A modifier: take it on the press (its flag is set), ignore the release.
+            let k = TalkKey(keyCode: code)
+            if k.isModifier, let m = k.modifierMask, e.modifierFlags.rawValue & UInt(m) != 0 { self.talkKey = k; self.endRecordingTalkKey() }
+            return e
+        }
+    }
+    func endRecordingTalkKey() {
+        if let talkKeyMonitor { NSEvent.removeMonitor(talkKeyMonitor) }
+        talkKeyMonitor = nil; recordingTalkKey = false
+    }
     private var shortcutMonitor: Any?
     // Next chord pressed while the settings window is key becomes the shortcut.
     func beginRecordingShortcut() {
@@ -1046,6 +1069,14 @@ struct Settings: View {
                                 }
                             }
                             Text(model.status).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                            Divider()
+                            HStack(spacing: 8) {
+                                Text("ปุ่มพูดของคุณเอง:").font(.caption)
+                                Text(model.talkKey?.label ?? "ยังไม่ได้ตั้ง").font(.system(size: 12, weight: .medium, design: .rounded)).padding(.horizontal, 8).padding(.vertical, 3).background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+                                Button(model.recordingTalkKey ? "กดปุ่มที่ต้องการ… (Esc ยกเลิก)" : "เปลี่ยนปุ่ม") { model.recordingTalkKey ? model.endRecordingTalkKey() : model.beginRecordingTalkKey() }.controlSize(.small).disabled(model.phase != .idle)
+                                if model.talkKey != nil { Button("ล้าง") { model.talkKey = nil }.controlSize(.small) }
+                            }
+                            Text("สำหรับคีย์บอร์ดที่ไม่มี Fn: เลือกปุ่มเดี่ยว 1 ปุ่ม เช่น F13–F20, ⌥ ขวา, ⌘ ขวา แล้วกดค้างเพื่อพูดเหมือน Fn · ปุ่มธรรมดาจะถูกยึดไว้ไม่ส่งถึงแอปอื่น ปุ่ม ⌘/⌥/⌃/⇧ ยังทำงานตามปกติ · Fn และ F18 ยังใช้ได้เหมือนเดิม").font(.caption).foregroundStyle(.secondary)
                         }
                         card("Snap Translate") {
                             HStack(spacing: 12) {
@@ -1150,7 +1181,7 @@ struct Settings: View {
                         }
                         card("ดูแล gluu bot") {
                             CritterPreviewCard(model: model, showsCare: true)
-                            Text("ที่ตัวละครมุมจอ: ลากเมาส์บนตัว = ลูบ · ดับเบิลคลิก = เล่นหัว · คลิกขวา = เมนูให้อาหาร/อ่าน/เล่น · เล่นหัวถี่เกิน 4 ครั้งใน 20 วิ จะโดนงอน").font(.caption).foregroundStyle(.secondary)
+                            Text("ที่ตัวละครมุมจอ: คลิก = เมนู (เมนู / ให้อาหาร / เล่นด้วย) · ดับเบิลคลิก = เล่นด้วย (ลูบหัว เกาคาง เล่นหัว เป่ายิ้งฉุบ) · ลากบนตัว = ลูบ · คลิกขวา = เมนูเต็ม · เล่นหัวถี่เกิน 4 ครั้งใน 20 วิ จะโดนงอน").font(.caption).foregroundStyle(.secondary)
                             Text("การพิมพ์ด้วยเสียงทุกครั้งนับเป็นการใช้เวลาด้วยกัน (+ความสนิทเล็กน้อย สูงสุดวันละ 6) · ให้อาหาร \(c.totalFeeds) · อ่าน \(c.totalReads) · เล่น \(c.totalPlays) · ลูบ \(c.totalStrokes) · พิมพ์ด้วยกัน \(c.totalDictations) ครั้ง").font(.caption2).foregroundStyle(.secondary)
                         }
                         card("อารมณ์ขันและอากาศ") {
@@ -1496,6 +1527,17 @@ final class Delegate: NSObject, NSApplicationDelegate {
                 if let action = owner.shortcut.trigger(.f18, down: type == .keyDown) { owner.dispatchShortcut(action) }
                 return nil
             }
+            // The user's own push-to-talk key: a plain key is consumed on both edges; a modifier key passes through.
+            if let tk = owner.model.talkKey, key == tk.keyCode {
+                if let m = tk.modifierMask, type == .flagsChanged {
+                    if let action = owner.shortcut.trigger(.custom, down: event.flags.rawValue & m != 0) { owner.dispatchShortcut(action) }
+                    return Unmanaged.passUnretained(event)
+                }
+                if tk.modifierMask == nil, type == .keyDown || type == .keyUp {
+                    if let action = owner.shortcut.trigger(.custom, down: type == .keyDown) { owner.dispatchShortcut(action) }
+                    return nil
+                }
+            }
             // Fn + Option cycles the character's playfulness. Modifiers pass through untouched.
             if type == .flagsChanged, key == 58 || key == 61 {
                 if let action = owner.shortcut.option(down: event.flags.contains(.maskAlternate)) { owner.dispatchShortcut(action) }
@@ -1529,6 +1571,10 @@ final class Delegate: NSObject, NSApplicationDelegate {
         global = NSEvent.addGlobalMonitorForEvents(matching: [.flagsChanged, .keyDown, .keyUp, .leftMouseDown, .rightMouseDown]) { [weak self] e in self?.event(e) }
     }
     func event(_ e: NSEvent) {
+        if fnTap == nil, let tk = model.talkKey, Int64(e.keyCode) == tk.keyCode {
+            if let m = tk.modifierMask, e.type == .flagsChanged { if e.modifierFlags.rawValue & UInt(m) != 0 { model.press() } else { model.release() }; return }
+            if tk.modifierMask == nil, e.type == .keyDown || e.type == .keyUp, !e.isARepeat { if e.type == .keyDown { model.press() } else { model.release() }; return }
+        }
         if e.type == .keyDown || e.type == .keyUp, model.externalF18, e.keyCode == UInt16(kVK_F18) {
             if fnTap == nil && !e.isARepeat {
                 if e.type == .keyDown { model.press() } else { model.release() }
@@ -1600,6 +1646,13 @@ final class Delegate: NSObject, NSApplicationDelegate {
     }
 }
 let app = NSApplication.shared
+// Live probe (dev only): does a scene move the body in real time, not just in the paused previews?
+if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--probe-scene", let sc = Critter.Scene(rawValue: CommandLine.arguments[2]) {
+    let e = CritterEngine(); e.start(); e.perform(scene: sc)
+    var xs: [Int] = []
+    for _ in 0..<15 { RunLoop.main.run(until: Date().addingTimeInterval(0.2)); xs.append(Int(e.body.x)) }
+    print("\(sc.rawValue) x every 0.2 s:", xs); exit(0)
+}
 if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--render-overlays" {
     try OverlaySnapshots.render(to: CommandLine.arguments[2])
 } else if CommandLine.arguments.count == 2 && CommandLine.arguments[1] == "--probe-focus" {
