@@ -23,6 +23,8 @@ final class CritterEngine: ObservableObject {
     @Published private(set) var snapshot: Snapshot
     @Published var bubble: String?
     @Published var langLabel: String?
+    var onReposition: ((Bool) -> Void)?
+    var repositioning = false
     var onTap: (() -> Void)?             // "เมนู" in the click menu: opens settings
     enum Menu { case closed, root, play, rps }
     @Published var menu: Menu = .closed
@@ -81,12 +83,15 @@ final class CritterEngine: ObservableObject {
     private var sceneSeed = 0
     private var sceneAnchorX: Double? = nil
     private var sceneStartFrac = 0.5
-    var external: External = .idle
+    var external: External = .idle {
+        didSet { if external != oldValue { expressionSetAt = clock; blinkUntil = -1; blinkAt = clock + 1.6 } }
+    }
     var level = 0.0
     var paused = false                  // offscreen previews only
     var settingsIsFront: () -> Bool = { false }   // asked every tick; a hidden settings window does not count
     private(set) var mood: Critter.Mood = .normal
-    private var moodEndsAt = 0.0, moodSetAt = 0.0, nextMoveAt = 3.0, nextMoodAt = 5.0, blinkAt = 1.8, blinkUntil = -1.0, saccadeAt = 2.0
+    private var moodEndsAt = 0.0, moodSetAt = 0.0, nextMoveAt = 3.0, nextMoodAt = 5.0, blinkAt = 1.8, blinkUntil = -1.0, blinkDuration = 0.11, saccadeAt = 2.0
+    private var expressionSetAt = 0.0
     private var bubbleUntil = -1.0, langUntil = -1.0, deepStartAt = -1.0, doneUntil = -1.0
     private var clock = 0.0, lastTick: CFTimeInterval = CACurrentMediaTime()
     private var look = CGPoint.zero, want = CGPoint.zero, pointerInside = false
@@ -115,7 +120,7 @@ final class CritterEngine: ObservableObject {
         case .language(let m):
             bubble = nil; bubbleUntil = -1          // only the TH/EN pill, never two boxes stacked
             langLabel = m.rawValue; langUntil = clock + 1.3
-            Critter.hop(&body, height: 180); blinkUntil = clock + 0.12
+            Critter.hop(&body, height: 180); blinkDuration = 0.16; blinkUntil = clock + blinkDuration
         case .done: external = .done; doneUntil = clock + 1.1; Critter.hop(&body, height: 400); say(Critter.expressions[.done]!.says, for: 1.2, kind: .done); act(.dictation)
         case .held: setMood(.sad, hold: 3.0)
         case .error: setMood(.annoyed, hold: 2.5)
@@ -130,6 +135,11 @@ final class CritterEngine: ObservableObject {
         external = e
     }
     func setMood(_ m: Critter.Mood, hold: Double = 2.6, speak: Bool = true) {
+        if mood != m {
+            expressionSetAt = clock
+            // Let a newly requested expression read before an incidental blink covers it.
+            blinkUntil = -1; blinkAt = clock + 1.4
+        }
         mood = m; moodSetAt = clock; moodEndsAt = clock + hold
         guard let e = Critter.expressions[m] else { return }
         if m == .normal { bubble = nil; bubbleUntil = -1 } else if !e.says.isEmpty && speak {
@@ -237,7 +247,7 @@ final class CritterEngine: ObservableObject {
         if fr.droplets { dropletAt = clock; Critter.hop(&body, height: 50) }
         if let v = fr.driveVx { body.vx = v * body.radius }
         if let h = fr.hopNow { Critter.hop(&body, height: h) }
-        if fr.pin && sceneAnchorX == nil { sceneAnchorX = body.x }
+        if (fr.pin || fr.planeDeparting) && sceneAnchorX == nil { sceneAnchorX = body.x }
         if let xf = fr.xFrac { let lo = Critter.minX(body), hi = Critter.maxX(body, in: area); body.x = lo + (hi - lo) * xf; body.vx = 0 }
         if let d = fr.depth { body.zTarget = d }
         if let lift = fr.lift {
@@ -268,9 +278,10 @@ final class CritterEngine: ObservableObject {
     private var swayUntil = -1.0
 
     // MARK: the clock
-    private func tick() {
+    private func tick(dt fixedStep: Double? = nil) {
+        if repositioning { lastTick = CACurrentMediaTime(); return }
         let now = CACurrentMediaTime()
-        let dt = min(0.033, now - lastTick); lastTick = now; clock += dt
+        let dt = fixedStep ?? min(0.033, now - lastTick); lastTick = now; clock += dt
         let still = reduceMotion
         pointerInside = mouseInPanel?() != nil
         if menu != .closed {
@@ -331,18 +342,27 @@ final class CritterEngine: ObservableObject {
         // Gaze: follow the pointer, otherwise glance around now and then.
         var tracking = eyeTracking ? (mouseAnywhere?() != nil || pointerInside) : pointerInside
         if sceneFrame?.lookUp == true { want = CGPoint(x: 0.15, y: -1); tracking = true }
-        if !tracking && !still && clock > saccadeAt { want = CGPoint(x: Double.random(in: -0.3...0.3), y: Double.random(in: -0.2...0.2)); saccadeAt = clock + 1.8 + Double.random(in: 0..<2.6) }
-        let k = still ? 1 : 0.1
+        if !tracking && !still && !paused && clock > saccadeAt { want = CGPoint(x: Double.random(in: -0.3...0.3), y: Double.random(in: -0.2...0.2)); saccadeAt = clock + 1.8 + Double.random(in: 0..<2.6) }
+        let visualDT = paused && fixedStep == nil ? 1.0 / 60 : dt
+        let k = still ? 1 : 1 - exp(-visualDT * 9)
         look.x += (want.x - look.x) * k; look.y += (want.y - look.y) * k
         let target = currentExpression()
-        if clock > blinkAt && !still && !target.arc { let slow = Double.random(in: 0..<1) < 0.2; blinkUntil = clock + (slow ? 0.32 : 0.11); blinkAt = clock + 2 + Double.random(in: 0..<3) }
+        if clock > blinkAt && !still && !paused && !target.arc && mood != .asleep && mood != .zen {
+            let slow = Double.random(in: 0..<1) < 0.2
+            blinkDuration = slow ? 0.32 : 0.11
+            blinkUntil = clock + blinkDuration
+            blinkAt = clock + 2 + Double.random(in: 0..<3)
+        }
         let breath = still ? 0 : sin(clock * (target.slowBreath ? 1.2 : 2)) * 0.015
         var extraTilt = max(-12, min(12, body.vx * 0.03 / body.unit))
-        // Never fully still: a slow weight shift between the bigger moves, like someone standing in place.
-        if !still && external == .idle && body.onGround && mood != .asleep { extraTilt += sin(clock * 0.9) * 2.2 + sin(clock * 2.3) * 0.6 }
+        // A short weight shift, then a genuine hold: constant wobbling obscures deliberate reactions.
+        if !still && external == .idle && body.onGround && mood != .asleep && mood != .zen {
+            let restPhase = clock.truncatingRemainder(dividingBy: 7.5)
+            if restPhase < 2.4 { extraTilt += sin(restPhase / 2.4 * 2 * .pi) * 1.6 }
+        }
         if swayUntil > clock { extraTilt += sin(clock * 4) * 9 }
         if body.pin > 0 { extraTilt += sin(clock * 20) * 4 }
-        face.approach(target, breath: breath, extraTilt: extraTilt, k: still ? 1 : 0.16)
+        face.approach(target, breath: breath, extraTilt: extraTilt, k: still ? 1 : 1 - exp(-visualDT * 13))
         if external == .listening { face.left.h = 26 + level * 4; face.right.h = 27 + level * 4 }
         if bubble != nil && clock > bubbleUntil { bubble = nil }
         if langLabel != nil && clock > langUntil { langLabel = nil }
@@ -362,21 +382,35 @@ final class CritterEngine: ObservableObject {
         var gaze = CGPoint(x: look.x * 9 * gs, y: look.y * 7 * gs)
         if mood == .bored && external == .idle { gaze.x += sin(clock * 0.8) * 6 }
         if !body.onGround && face.arc < 0.5 && external == .idle { gaze.y -= max(-5, min(5, -body.vy * 0.01 / body.unit)) }
-        snapshot = Snapshot(center: center(), drawRadius: body.drawRadius, unit: body.unit, squash: body.squash, z: body.z, face: face,
-                            blink: clock < blinkUntil ? 1 : 0, gaze: gaze, level: level, t: clock, still: reduceMotion, moodAge: clock - moodSetAt,
+        let actingMood: Critter.Mood = external == .listening ? .listening : external == .thinking ? .thinking : external == .done ? .done : mood
+        let actingAge = clock - expressionSetAt
+        let acting = Critter.acting(actingMood, age: actingAge, still: reduceMotion)
+        var displayedFace = face
+        displayedFace.tilt += acting.tilt; displayedFace.sx *= acting.sx; displayedFace.sy *= acting.sy
+        if actingMood == .startled { displayedFace.shake *= exp(-max(0, actingAge) * 3) }
+        displayedFace.left.w *= acting.eyeScale; displayedFace.left.h *= acting.eyeScale
+        displayedFace.right.w *= acting.eyeScale; displayedFace.right.h *= acting.eyeScale
+        if actingMood == .asleep || actingMood == .zen { gaze = .zero }
+        else { gaze.x += acting.gazeX; gaze.y += acting.gazeY }
+        let blinkAmount = reduceMotion ? 0 : Critter.blinkClosure(elapsed: clock - (blinkUntil - blinkDuration), duration: blinkDuration)
+        snapshot = Snapshot(center: center(), drawRadius: body.drawRadius, unit: body.unit, squash: body.squash, z: body.z, face: displayedFace,
+                            blink: blinkAmount, gaze: gaze, level: level, t: clock, still: reduceMotion, moodAge: actingAge,
                             groundY: inset.height + Critter.ground(body, in: area) + body.drawRadius,
                             scene: sceneFrame, sceneKind: scene, area: CGRect(x: inset.width, y: inset.height - body.radius, width: area.width, height: area.height + body.radius), sky: sky, prop: sceneProp, pixelEyes: pixelEyes, mood: mood, external: external,
                             bird: birdArriveAt >= 0 && clock >= birdArriveAt ? min(1, (clock - birdArriveAt) / 1.2) : 0, birdLeave: birdLeaveAt >= 0 ? min(1, (clock - birdLeaveAt) / 1.2) : 0,
                             anchorX: inset.width + (sceneAnchorX ?? body.x),
                             burstAge: burstAt < 0 ? -1 : clock - burstAt, popAge: popAt < 0 ? -1 : clock - popAt, dropletAge: dropletAt < 0 ? -1 : clock - dropletAt)
     }
+    /// Deterministic review uses the live engine's step, not a separate animation implementation.
+    func reviewStep(dt: Double = 1.0 / 30) { tick(dt: dt) }
+    func reviewBlink() { blinkDuration = 0.24; blinkUntil = clock + blinkDuration }
     /// Offscreen review: put the character in a state and let the face settle without a screen.
     func settle(mood m: Critter.Mood, external e: External = .idle, z: Double = 0, level lv: Double = 0, bubbleText: String? = nil, steps: Int = 90) {
         external = e; level = lv; scheduler.playfulness = 0; paused = true
         body.z = z; body.zTarget = z; body.y = Critter.ground(body, in: area)
         setMood(m, hold: 1e9)
         for _ in 0..<steps { tick() }
-        moodSetAt = clock - 5; publish()
+        moodSetAt = clock - 5; expressionSetAt = clock - 5; publish()
         bubble = bubbleText ?? Critter.expressions[m]?.says.first
     }
     /// Offscreen review of a set piece at a given moment; one-tick effects can be pinned to a recent age.
@@ -388,7 +422,7 @@ final class CritterEngine: ObservableObject {
         if let d = Critter.sceneFrame(s, t: t, seed: sceneSeed, from: sceneStartFrac).depth { body.z = d; body.zTarget = d; body.y = Critter.ground(body, in: area) }   // depth eases in real time; previews jump to it
         if burst { burstAt = clock - 0.12 }; if pop { popAt = clock - 0.1 }; if droplets { dropletAt = clock - 0.12 }
         for _ in 0..<60 { tick() }
-        moodSetAt = clock - 5; publish()   // previews show the settled face, not the first frame of the dissolve
+        moodSetAt = clock - 5; expressionSetAt = clock - 5; publish()   // previews show the settled face, not the first frame of the dissolve
         bubble = bubbleText
     }
     /// Offscreen review of the idle sleep with the bird perched.
@@ -397,7 +431,7 @@ final class CritterEngine: ObservableObject {
         setMood(.asleep, hold: 1e9, speak: false)
         for _ in 0..<60 { tick() }
         if asleepWithBird { birdArriveAt = clock - 5 }
-        moodSetAt = clock - 5; publish()
+        moodSetAt = clock - 5; expressionSetAt = clock - 5; publish()
         bubble = "z z z"
     }
     /// Offscreen review of a weather state.
@@ -406,7 +440,7 @@ final class CritterEngine: ObservableObject {
         sky = Critter.Sky(kind: w, umbrella: umbrella, night: night, age: age); weatherUntil = clock + 1e9
         setMood(m, hold: 1e9, speak: false)
         for _ in 0..<60 { tick() }
-        moodSetAt = clock - 5; publish()   // previews show the settled face, not the first frame of the dissolve
+        moodSetAt = clock - 5; expressionSetAt = clock - 5; publish()   // previews show the settled face, not the first frame of the dissolve
         bubble = bubbleText
     }
     /// True when the pointer (panel coordinates) is on the body: the only place a click is ours.
@@ -417,6 +451,7 @@ final class CritterEngine: ObservableObject {
 struct CritterView: View {
     @ObservedObject var engine: CritterEngine
     @State private var lastDrag = CGSize.zero
+    @GestureState private var movingGesture = false
     var body: some View {
         let s = engine.snapshot
         ZStack(alignment: .topLeading) {
@@ -439,6 +474,21 @@ struct CritterView: View {
                 .position(s.center)
                 .gesture(DragGesture(minimumDistance: 4).onChanged { v in engine.strokeMoved(by: hypot(v.translation.width - lastDrag.width, v.translation.height - lastDrag.height)); lastDrag = v.translation }
                     .onEnded { _ in lastDrag = .zero })
+                .highPriorityGesture(LongPressGesture(minimumDuration: 0.35, maximumDistance: 8)
+                    .sequenced(before: DragGesture(minimumDistance: 0))
+                    .updating($movingGesture) { value, state, _ in
+                        if case .second(true, _) = value { state = true }
+                    }
+                    .onChanged { value in
+                        guard engine.onReposition != nil else { return }
+                        if case .second(true, _) = value {
+                            engine.repositioning = true; engine.closeMenu(); engine.onReposition?(true)
+                        }
+                    }
+                    .onEnded { _ in engine.onReposition?(false); engine.repositioning = false })
+                .onChange(of: movingGesture) { _, active in
+                    if !active && engine.repositioning { engine.onReposition?(false); engine.repositioning = false }
+                }
                 .onTapGesture(count: 3) { engine.closeMenu(); engine.onTap?() }   // triple-click = straight into settings
                 .onTapGesture(count: 2) { engine.choose(.play) }   // double-click = play with it
                 .onTapGesture { engine.toggleMenu() }
@@ -492,6 +542,13 @@ enum CritterPainter {
     static let balloonRed = Color(red: 0.90, green: 0.25, blue: 0.30)
     static let umbrellaRed = Color(red: 0.93, green: 0.36, blue: 0.30)
     static let pacifierYellow = Color(red: 0.98, green: 0.80, blue: 0.18)
+    static func drawShell(radius r: Double = 46, in c: inout GraphicsContext) {
+        let body = Path(ellipseIn: CGRect(x: -r, y: -r, width: 2 * r, height: 2 * r))
+        c.fill(body, with: .radialGradient(
+            Gradient(colors: [Color(white: 0.19), ink, Color(white: 0.035)]),
+            center: CGPoint(x: -r * 0.435, y: -r * 0.522), startRadius: r * 0.0435, endRadius: r * 1.76))
+        c.stroke(body, with: .color(.white.opacity(0.16)), lineWidth: 1.2 * r / 46)
+    }
     static func draw(_ s: CritterEngine.Snapshot, in ctx: inout GraphicsContext) {
         let f = s.face, t = s.t
         let sc = s.scene ?? Critter.SceneFrame()
@@ -542,10 +599,22 @@ enum CritterPainter {
         // Ground shadow: the one cue that turns "smaller" into "farther".
         let lift = max(0, s.groundY - s.drawRadius - s.center.y)
         let shadowScale = (1 - min(0.5, lift / (260 * s.unit))) * sceneScale
-        ctx.opacity = 0.14 * (1 - min(0.7, lift / (260 * s.unit))) * (1 - sc.sink)
-        ctx.fill(Path(ellipseIn: CGRect(x: s.center.x - 30 * s.unit * (s.drawRadius / (s.unit * 44)) * shadowScale, y: s.groundY - 6 * s.unit, width: 60 * s.unit * (s.drawRadius / (s.unit * 44)) * shadowScale, height: 10 * s.unit)), with: .color(ink))
-        ctx.opacity = 1
+        let shadowWidth = 60 * s.unit * (s.drawRadius / (s.unit * 44)) * shadowScale
+        let shadowAlpha = (1 - min(0.7, lift / (260 * s.unit))) * (1 - sc.sink)
+        for (width, height, alpha) in [(1.45, 15.0, 0.035), (1.15, 11.0, 0.055), (0.78, 6.0, 0.09)] {
+            ctx.fill(Path(ellipseIn: CGRect(x: s.center.x - shadowWidth * width / 2,
+                                           y: s.groundY - height * s.unit * 0.6,
+                                           width: shadowWidth * width, height: height * s.unit)),
+                     with: .color(ink.opacity(alpha * shadowAlpha)))
+        }
 
+        if sc.planeDeparting, let pl = sc.plane {
+            // Departure stays at cruising altitude while the character falls independently.
+            var aircraft = ctx
+            aircraft.translateBy(x: s.anchorX + pl.x * s.drawRadius, y: s.groundY - 4.2 * s.drawRadius)
+            aircraft.scaleBy(x: s.drawRadius / 46, y: s.drawRadius / 46)
+            drawPlane(at: .zero, t: t, still: s.still, in: &aircraft)
+        }
         var c = ctx
         if sc.sink > 0 {
             // Dropping into the hole: everything below the rim is gone.
@@ -561,13 +630,13 @@ enum CritterPainter {
         if sc.towel { drawTowel(in: &c) }
         if sc.bench { drawBench(in: &c) }
         if sc.lamp > 0.01 { drawLamp(s, amount: sc.lamp, on: sc.lampOn, finger: sc.lampFinger, in: &c) }
-        if sc.board { drawBoard(t: t, still: s.still, in: &c) }
+        if sc.board { drawBoard(t: t, flip: sc.boardFlip, still: s.still, in: &c) }
         if sc.bag > 0.01 { drawBag(amount: sc.bag, t: t, still: s.still, in: &c) }
         if sc.kite > 0.01 { drawKite(amount: sc.kite, t: t, still: s.still, in: &c) }
         if sc.pump > 0.01 { drawPump(presence: sc.pump, stroke: sc.pumpStroke, t: t, still: s.still, in: &c) }
         if sc.bomb > 0.01 || sc.smokeCloud > 0.01 || sc.door > 0.01 { drawNinja(bomb: sc.bomb, cloud: sc.smokeCloud, door: sc.door, doorOpen: sc.doorOpen, t: t, still: s.still, in: &c) }
         if sc.hidden { return }
-        if let pl = sc.plane { drawPlane(at: CGPoint(x: pl.x * 46, y: pl.y * 46), t: t, still: s.still, in: &c) }
+        if let pl = sc.plane, !sc.planeDeparting { drawPlane(at: CGPoint(x: pl.x * 46, y: pl.y * 46), t: t, still: s.still, in: &c) }
         if sc.glass > 0.01 { drawGlass(amount: sc.glass, pouring: sc.pour, streamTo: 46 - sc.water * 46, t: t, still: s.still, in: &c) }
         if sc.bubbles { drawBubbles(t: t, still: s.still, in: &c) }
         if sc.aura { drawAura(t: t, still: s.still, in: &c) }
@@ -584,7 +653,7 @@ enum CritterPainter {
         if f.rings > 0.01 {
             for i in 0..<3 {
                 let q = s.still ? 0.5 : ((t * 0.9 + Double(i) / 3).truncatingRemainder(dividingBy: 1))
-                c.stroke(Path(ellipseIn: CGRect(x: -(48 + q * 22), y: -(48 + q * 22), width: 2 * (48 + q * 22), height: 2 * (48 + q * 22))), with: .color(ink.opacity(f.rings * (1 - q) * 0.55)), lineWidth: 2)
+                c.stroke(Path(ellipseIn: CGRect(x: -(48 + q * 22), y: -(48 + q * 22), width: 2 * (48 + q * 22), height: 2 * (48 + q * 22))), with: .color(led.opacity(f.rings * (1 - q) * 0.32)), lineWidth: 1.4)
             }
         }
         if f.spark > 0.01 {
@@ -627,9 +696,9 @@ enum CritterPainter {
                 g.fill(Path(ellipseIn: CGRect(x: -34, y: -50, width: 68, height: 100)), with: .color(ink.opacity(0.55)))
             }
         } else {
-            c.fill(bodyPath, with: .color(ink))
+            // One inexpensive radial fill follows every squash and turn without visible highlight seams.
+            drawShell(in: &c)
             if sc.glow > 0.01 { c.fill(bodyPath, with: .color(Color(red: 1.0, green: 0.85, blue: 0.3).opacity(sc.glow * 0.95))); c.fill(Path(ellipseIn: CGRect(x: -30, y: -34, width: 22, height: 14)), with: .color(.white.opacity(0.5 * sc.glow))) }
-            c.stroke(bodyPath, with: .color(.white.opacity(0.16)), lineWidth: 1.2)   // keeps it visible over a black window
         }
         if s.sky.kind == .snow && s.sceneKind == nil { drawSnowCap(amount: min(1, s.sky.age / 90), in: &c) }
         if sc.charred > 0.01 { drawCharred(amount: sc.charred, t: t, still: s.still, in: &c) }
@@ -717,14 +786,13 @@ enum CritterPainter {
         let b = path.boundingRect.insetBy(dx: -pitch, dy: -pitch)
         let i0 = Int(floor(b.minX / pitch)), i1 = Int(ceil(b.maxX / pitch)), j0 = Int(floor(b.minY / pitch)), j1 = Int(ceil(b.maxY / pitch))
         guard i1 > i0, j1 > j0, (i1 - i0) * (j1 - j0) < 4000 else { return }
-        var on = Path(), halo = Path(), dim = Path()
+        var on = Path(), halo = Path(), dim = Path(), cores = Path()
         for j in j0...j1 {
             for i in i0...i1 {
                 let p = CGPoint(x: Double(i) * pitch, y: Double(j) * pitch)
                 guard path.contains(p) else { continue }
                 // A new expression switches its dots on in a random order, like a panel refreshing.
                 let n = hash(i, j)
-                if !still && age < 0.3 && n > age / 0.3 + 0.1 { continue }
                 var bright = true
                 switch mode {
                 case .none, .plain: break
@@ -734,14 +802,21 @@ enum CritterPainter {
                     let h = (0.25 + lv * 0.75) * (0.6 + 0.4 * abs(sin(col * 1.7 + (still ? 0 : t * 11)))) * rows
                     bright = fromBottom <= h
                 }
+                // The new expression stays legible while its individual LEDs brighten.
+                if !still && age < 0.3 && n > age / 0.3 + 0.1 { bright = false }
                 let r = CGRect(x: p.x - dot / 2, y: p.y - dot / 2, width: dot, height: dot)
-                if bright { on.addRoundedRect(in: r, cornerSize: CGSize(width: 0.8, height: 0.8)); halo.addRoundedRect(in: r.insetBy(dx: -1.1, dy: -1.1), cornerSize: CGSize(width: 1.6, height: 1.6)) }
+                if bright {
+                    on.addRoundedRect(in: r, cornerSize: CGSize(width: 0.65, height: 0.65))
+                    halo.addRoundedRect(in: r.insetBy(dx: -0.75, dy: -0.75), cornerSize: CGSize(width: 1.3, height: 1.3))
+                    cores.addRoundedRect(in: r.insetBy(dx: 0.65, dy: 0.65), cornerSize: CGSize(width: 0.3, height: 0.3))
+                }
                 else { dim.addRoundedRect(in: r, cornerSize: CGSize(width: 0.8, height: 0.8)) }
             }
         }
-        c.fill(halo, with: .color(led.opacity(0.22 * alpha)))
+        c.fill(halo, with: .color(led.opacity(0.15 * alpha)))
         c.fill(on, with: .color(led.opacity(alpha)))
-        c.fill(dim, with: .color(led.opacity(0.28 * alpha)))
+        c.fill(cores, with: .color(Color(red: 0.8, green: 0.97, blue: 1).opacity(0.45 * alpha)))
+        c.fill(dim, with: .color(led.opacity(0.52 * alpha)))
     }
     static func heartPath(at o: CGPoint, size r: Double) -> Path {
         var p = Path()
@@ -756,17 +831,30 @@ enum CritterPainter {
     static func drawSky(_ s: CritterEngine.Snapshot, in ctx: inout GraphicsContext) {
         let a = s.area, u = s.unit, t = s.t
         let corner = CGPoint(x: a.maxX - 30 * u, y: a.minY + 6 * u)
+        if s.sky.kind == .rain || s.sky.kind == .snow {
+            for i in 0..<5 {
+                let drift = s.still ? 0 : sin(t * 0.13 + Double(i)) * 6*u
+                let x = a.minX + a.width * (0.15 + Double(i)*0.17) + drift
+                let y = a.minY + (i % 2 == 0 ? 10.0 : 17.0)*u
+                let cloud = Path(ellipseIn: CGRect(x: x-34*u, y: y-13*u, width: 68*u, height: 27*u))
+                ctx.fill(cloud, with: .radialGradient(Gradient(colors: [Color(white: s.sky.night ? 0.5 : 0.86).opacity(0.27), Color(white: 0.4).opacity(0)]), center: CGPoint(x: x, y: y), startRadius: 3*u, endRadius: 35*u))
+            }
+        }
         if s.sky.night {
             let disc = Path(ellipseIn: CGRect(x: corner.x - 13 * u, y: corner.y - 13 * u, width: 26 * u, height: 26 * u))
             var moon = disc; moon.addEllipse(in: CGRect(x: corner.x - 5 * u, y: corner.y - 17 * u, width: 26 * u, height: 26 * u))
             var m = ctx; m.clip(to: disc)
-            m.fill(moon, with: .color(Color(red: 0.98, green: 0.93, blue: 0.7).opacity(0.85)), style: FillStyle(eoFill: true))
+            m.clip(to: moon, style: FillStyle(eoFill: true))
+            m.fill(disc, with: .radialGradient(Gradient(colors: [Color(red: 1, green: 0.97, blue: 0.85), Color(red: 0.71, green: 0.75, blue: 0.78), Color(red: 0.29, green: 0.36, blue: 0.45)]), center: CGPoint(x: corner.x - 8*u, y: corner.y - 7*u), startRadius: 0, endRadius: 26*u))
+            for (dx,dy,rr) in [(-8.0,-3.0,2.5),(-5.0,7.0,2.0),(-10.0,4.0,1.2)] {
+                m.fill(Path(ellipseIn: CGRect(x: corner.x+dx*u, y: corner.y+dy*u, width: rr*u, height: rr*u)), with: .color(Color(white: 0.35).opacity(0.28)))
+            }
             for (i, p) in [(-90.0, 8.0), (-140.0, 24.0), (-60.0, 40.0), (-190.0, 4.0), (-110.0, 56.0), (-230.0, 36.0), (-30.0, 70.0)].enumerated() {
                 let tw = s.still ? 0.7 : 0.5 + 0.5 * sin(t * 2 + Double(i) * 1.7), r = (1.2 + Double(i % 3) * 0.5) * u
                 ctx.fill(Path(ellipseIn: CGRect(x: corner.x + p.0 * u - r, y: corner.y + p.1 * u - r, width: 2 * r, height: 2 * r)), with: .color(.white.opacity(0.35 + 0.5 * tw)))
             }
         }
-        if s.sky.kind == .sunny || s.sky.kind == .heat {
+        if !s.sky.night && (s.sky.kind == .sunny || s.sky.kind == .heat) {
             let hot = s.sky.kind == .heat
             let col = hot ? Color(red: 1, green: 0.5, blue: 0.2) : Color(red: 1, green: 0.82, blue: 0.25)
             var rays = Path()
@@ -774,8 +862,8 @@ enum CritterPainter {
                 let ang = Double(i) * .pi / 5 + (s.still ? 0 : t * 0.25), r0 = 20.0 * u, r1 = (28 + (i % 2 == 0 ? 6 : 0)) * u
                 rays.move(to: CGPoint(x: corner.x + cos(ang) * r0, y: corner.y + sin(ang) * r0)); rays.addLine(to: CGPoint(x: corner.x + cos(ang) * r1, y: corner.y + sin(ang) * r1))
             }
-            ctx.stroke(rays, with: .color(col.opacity(0.8)), style: StrokeStyle(lineWidth: 2.2 * u, lineCap: .round))
-            ctx.fill(Path(ellipseIn: CGRect(x: corner.x - 15 * u, y: corner.y - 15 * u, width: 30 * u, height: 30 * u)), with: .color(col))
+            ctx.fill(Path(ellipseIn: CGRect(x: corner.x-39*u, y: corner.y-39*u, width: 78*u, height: 78*u)), with: .radialGradient(Gradient(colors: [col.opacity(0.32), col.opacity(0)]), center: corner, startRadius: 8*u, endRadius: 39*u))
+            ctx.fill(Path(ellipseIn: CGRect(x: corner.x - 15 * u, y: corner.y - 15 * u, width: 30 * u, height: 30 * u)), with: .radialGradient(Gradient(colors: [Color(red: 1, green: 0.99, blue: 0.85), col]), center: CGPoint(x: corner.x-4*u, y: corner.y-5*u), startRadius: 0, endRadius: 22*u))
             if hot {
                 // Heat shimmer over the floor.
                 var shimmer = Path()
@@ -790,14 +878,12 @@ enum CritterPainter {
     }
     static func drawSnow(_ s: CritterEngine.Snapshot, in ctx: inout GraphicsContext) {
         let a = s.area, u = s.unit
-        var flakes = Path()
         for i in 0..<30 {
-            let fall = s.still ? 0.4 : (s.t * 0.18 + Double(i) * 0.137).truncatingRemainder(dividingBy: 1)
+            let fall = s.still ? Double(i % 13) / 13 : (s.t * (0.10 + Double(i % 3)*0.07) + Double(i) * 0.137).truncatingRemainder(dividingBy: 1)
             let x = a.minX + Double((i * 71) % Int(max(1, a.width))) + (s.still ? 0 : sin(s.t * 1.1 + Double(i)) * 8 * u)
             let y = a.minY - 10 * u + fall * (s.groundY - a.minY + 10 * u), r = (1.6 + Double(i % 3) * 0.7) * u
-            flakes.addEllipse(in: CGRect(x: x - r, y: y - r, width: 2 * r, height: 2 * r))
+            ctx.fill(Path(ellipseIn: CGRect(x: x - r, y: y - r, width: 2 * r, height: 2 * r)), with: .color(.white.opacity(0.35 + Double(i % 3)*0.24)))
         }
-        ctx.fill(flakes, with: .color(.white.opacity(0.85)))
         let pile = min(1, s.sky.age / 120)
         if pile > 0.05 { ctx.fill(Path(roundedRect: CGRect(x: a.minX, y: s.groundY - 2 * u - 4 * u * pile, width: a.width, height: 6 * u * pile + 2 * u), cornerRadius: 3 * u), with: .color(.white.opacity(0.7))) }
     }
@@ -849,7 +935,7 @@ enum CritterPainter {
         p.move(to: CGPoint(x: -62, y: bottom - 62)); p.addLine(to: CGPoint(x: 62, y: bottom - 62)); p.addLine(to: CGPoint(x: 40, y: bottom - 30))
         p.addLine(to: CGPoint(x: 24, y: bottom - 30)); p.addLine(to: CGPoint(x: 32, y: bottom)); p.addLine(to: CGPoint(x: -32, y: bottom)); p.addLine(to: CGPoint(x: -24, y: bottom - 30)); p.addLine(to: CGPoint(x: -40, y: bottom - 30)); p.closeSubpath()
         p.move(to: CGPoint(x: -62, y: bottom - 62)); p.addQuadCurve(to: CGPoint(x: -92, y: bottom - 52), control: CGPoint(x: -84, y: bottom - 62)); p.addLine(to: CGPoint(x: -62, y: bottom - 44)); p.closeSubpath()
-        c.fill(p, with: .color(Color(white: 0.3)))
+        c.fill(p, with: .linearGradient(Gradient(colors: [Color(white: 0.65), Color(white: 0.24), Color(white: 0.38), Color(white: 0.12)]), startPoint: CGPoint(x: -30, y: bottom - 62), endPoint: CGPoint(x: 20, y: bottom)))
         c.stroke(p, with: .color(Color(white: 0.55)), lineWidth: 1.5)
     }
     static func drawHeart(at o: CGPoint, size r: Double, opacity: Double, in c: inout GraphicsContext) {
@@ -870,14 +956,13 @@ enum CritterPainter {
     // MARK: set-piece props. Body-space helpers work in the 92-unit body (radius 46), world helpers in panel points.
     static func drawRain(_ s: CritterEngine.Snapshot, in ctx: inout GraphicsContext) {
         let a = s.area, u = s.unit
-        var drops = Path()
         for i in 0..<34 {
             let x = a.minX + Double((i * 61) % Int(max(1, a.width)))
-            let fall = s.still ? 0.4 : (s.t * 1.7 + Double(i) * 0.173).truncatingRemainder(dividingBy: 1)
+            let fall = s.still ? Double(i % 11) / 11 : (s.t * (1.1 + Double(i % 3)*0.35) + Double(i) * 0.173).truncatingRemainder(dividingBy: 1)
             let y = a.minY - 30 * u + fall * (s.groundY - a.minY + 30 * u)
-            drops.move(to: CGPoint(x: x, y: y)); drops.addLine(to: CGPoint(x: x - 2 * u, y: y + 9 * u))
+            var drop = Path(); drop.move(to: CGPoint(x: x, y: y)); drop.addLine(to: CGPoint(x: x - (2 + Double(i % 3)) * u, y: y + (5 + Double(i % 3)*4) * u))
+            ctx.stroke(drop, with: .color(sky.opacity(0.25 + Double(i % 3)*0.2)), style: StrokeStyle(lineWidth: max(0.5, (0.6 + Double(i % 3)*0.3)*u), lineCap: .round))
         }
-        ctx.stroke(drops, with: .color(sky.opacity(0.75)), style: StrokeStyle(lineWidth: max(1, 1.4 * u), lineCap: .round))
         var splash = Path()
         for i in 0..<9 {
             let ph = s.still ? 0.3 : (s.t * 2.1 + Double(i) * 0.37).truncatingRemainder(dividingBy: 1)
@@ -935,7 +1020,7 @@ enum CritterPainter {
         c.fill(knot, with: .color(balloonRed))
         let w = 66 * amount, h = 82 * amount
         let body = Path(ellipseIn: CGRect(x: sway - w / 2, y: top - h, width: w, height: h))
-        c.fill(body, with: .color(balloonRed))
+        c.fill(body, with: .radialGradient(Gradient(colors: [Color(red: 1, green: 0.48, blue: 0.49), balloonRed, Color(red: 0.43, green: 0.025, blue: 0.09)]), center: CGPoint(x: sway - w * 0.18, y: top - h * 0.7), startRadius: 0, endRadius: max(1, h * 0.85)))
         c.fill(Path(ellipseIn: CGRect(x: sway - w * 0.28, y: top - h * 0.84, width: w * 0.16, height: h * 0.3)), with: .color(.white.opacity(0.45)))
     }
     static func drawUmbrella(t: Double, still: Bool, in c: inout GraphicsContext) {
@@ -950,7 +1035,7 @@ enum CritterPainter {
         canopy.move(to: CGPoint(x: -r, y: top.y + depth))
         canopy.addQuadCurve(to: CGPoint(x: r, y: top.y + depth), control: CGPoint(x: 0, y: top.y - depth * 0.9))
         canopy.closeSubpath()
-        u.fill(canopy, with: .color(Color(white: 0.16)))
+        u.fill(canopy, with: .linearGradient(Gradient(colors: [Color(white: 0.39), Color(white: 0.20), Color(white: 0.08)]), startPoint: CGPoint(x: -30, y: top.y), endPoint: CGPoint(x: 30, y: top.y + depth)))
         var ribs = Path()
         for i in 0...14 {
             let x = -r + Double(i) * (2 * r / 14), yy = top.y + depth - (1 - (x / r) * (x / r)) * depth * 0.95
@@ -1080,8 +1165,7 @@ enum CritterPainter {
             if gone < 1 {
                 var c = ctx; c.translateBy(x: cx, y: cy); c.scaleBy(x: k * (1 - gone * 0.4), y: k * (1 - gone * 0.4))
                 c.opacity = (i == chosen ? 1 : 0.9) * (1 - gone)
-                c.fill(Path(ellipseIn: CGRect(x: -r, y: -r, width: 2 * r, height: 2 * r)), with: .color(ink))
-                c.stroke(Path(ellipseIn: CGRect(x: -r, y: -r, width: 2 * r, height: 2 * r)), with: .color(.white.opacity(0.16)), lineWidth: 1.2)
+                drawShell(radius: r, in: &c)
                 let eyeW = r * 0.2 * (s.pixelEyes ? 1.3 : 1), eyeH = r * 0.5 * (s.pixelEyes ? 1.3 : 1)
                 for ex in [-r * 0.28, r * 0.24] {
                     var e = Path(roundedRect: CGRect(x: ex - eyeW / 2, y: -r * 0.3 - eyeH / 2, width: eyeW, height: eyeH), cornerRadius: eyeW / 2)
@@ -1092,7 +1176,7 @@ enum CritterPainter {
                 if i == chosen && vanish > 0 { for j in 0..<3 { let a = Double(j) * 2.1 + s.t * 2, sp = CGPoint(x: cos(a) * r * 1.3, y: sin(a) * r * 1.3 - r * 0.2); c.fill(Path(ellipseIn: CGRect(x: sp.x - 2 * s.unit, y: sp.y - 2 * s.unit, width: 4 * s.unit, height: 4 * s.unit)), with: .color(Color(red: 0.94, green: 0.62, blue: 0.15))) } }
             }
             if i != chosen && vanish > 0 && vanish < 1 {
-                var p = ctx
+                let p = ctx
                 for j in 0..<4 { let rr = r * (0.3 + vanish * 0.5), ang = Double(j) * .pi / 2 + 0.6; p.fill(Path(ellipseIn: CGRect(x: cx + cos(ang) * r * 0.5 * vanish - rr, y: cy + sin(ang) * r * 0.5 * vanish - rr, width: 2 * rr, height: 2 * rr)), with: .color(Color(white: 0.62).opacity(0.8 * (1 - vanish)))) }
             }
         }
@@ -1110,8 +1194,7 @@ enum CritterPainter {
         strands.addRoundedRect(in: CGRect(x: -56, y: -24, width: 22, height: 50), cornerSize: CGSize(width: 11, height: 11))
         strands.addRoundedRect(in: CGRect(x: 34, y: -24, width: 22, height: 50), cornerSize: CGSize(width: 11, height: 11))
         c.fill(strands, with: .color(hair))
-        c.fill(Path(ellipseIn: CGRect(x: -46, y: -46, width: 92, height: 92)), with: .color(ink))
-        c.stroke(Path(ellipseIn: CGRect(x: -46, y: -46, width: 92, height: 92)), with: .color(.white.opacity(0.16)), lineWidth: 1.2)
+        drawShell(in: &c)
         var cap = Path(); cap.move(to: CGPoint(x: -47, y: -6))
         cap.addArc(center: .zero, radius: 47, startAngle: .degrees(187), endAngle: .degrees(353), clockwise: false)
         for i in 0..<5 { cap.addQuadCurve(to: CGPoint(x: 47 - Double(i + 1) * 18.8, y: -8), control: CGPoint(x: 47 - Double(i) * 18.8 - 9.4, y: 4)) }
@@ -1122,12 +1205,12 @@ enum CritterPainter {
         c.fill(bow, with: .color(Color(red: 0.93, green: 0.35, blue: 0.5)))
         c.fill(Path(ellipseIn: CGRect(x: 24, y: -42, width: 8, height: 8)), with: .color(Color(red: 0.75, green: 0.2, blue: 0.38)))
         for x in [-26.0, 20.0] { c.fill(Path(ellipseIn: CGRect(x: x - 8, y: 12, width: 16, height: 9)), with: .color(Color(red: 0.9, green: 0.3, blue: 0.4).opacity(0.85))) }
-        let blink = s.still ? false : (s.t * 0.37).truncatingRemainder(dividingBy: 1) > 0.94
+        let phase = s.t.truncatingRemainder(dividingBy: 3.4)
+        let closure = s.still ? 0 : Critter.blinkClosure(elapsed: phase - 3.14, duration: 0.26)
         for x in [-14.0, 14.0] {
-            let h = blink ? 2.5 : 24.0
-            let eye = Path(roundedRect: CGRect(x: x - 4.5, y: -8 - h / 2, width: 9, height: h), cornerRadius: 4.5).applying(CGAffineTransform(translationX: x, y: -8).rotated(by: -12 * .pi / 180).translatedBy(x: -x, y: 8))
+            let eye = pill(Critter.Eye(w: s.pixelEyes ? 11.7 : 9, h: 24, r: -12, dx: 0, dy: 0), at: CGPoint(x: x, y: -8), gaze: .zero, blink: closure)
             if s.pixelEyes { drawDots(eye, alpha: 1, mode: .plain, t: s.t, age: 5, still: s.still, in: &c) } else { c.fill(eye, with: .color(.white)) }
-            if !blink { var lash = Path(); lash.move(to: CGPoint(x: x + 4, y: -20)); lash.addLine(to: CGPoint(x: x + 9, y: -24)); c.stroke(lash, with: .color(.white.opacity(0.8)), style: StrokeStyle(lineWidth: 2, lineCap: .round)) }
+            if closure < 0.5 { var lash = Path(); lash.move(to: CGPoint(x: x + 4, y: -20)); lash.addLine(to: CGPoint(x: x + 9, y: -24)); c.stroke(lash, with: .color((s.pixelEyes ? led : .white).opacity(0.8)), style: StrokeStyle(lineWidth: 2, lineCap: .round)) }
         }
     }
     static func drawClouds(_ s: CritterEngine.Snapshot, in ctx: inout GraphicsContext) {
@@ -1183,7 +1266,7 @@ enum CritterPainter {
     }
     static func drawPlane(at o: CGPoint, t: Double, still: Bool, in c: inout GraphicsContext) {
         let body = Color(white: 0.92), dark = Color(white: 0.45), red = Color(red: 0.86, green: 0.24, blue: 0.24)
-        c.fill(Path(ellipseIn: CGRect(x: o.x - 64, y: o.y - 15, width: 128, height: 30)), with: .color(body))
+        c.fill(Path(ellipseIn: CGRect(x: o.x - 64, y: o.y - 15, width: 128, height: 30)), with: .linearGradient(Gradient(colors: [.white, body, Color(white: 0.46)]), startPoint: CGPoint(x: o.x, y: o.y - 15), endPoint: CGPoint(x: o.x, y: o.y + 15)))
         c.stroke(Path(ellipseIn: CGRect(x: o.x - 64, y: o.y - 15, width: 128, height: 30)), with: .color(dark), lineWidth: 1.5)
         var wing = Path(); wing.move(to: CGPoint(x: o.x - 10, y: o.y)); wing.addLine(to: CGPoint(x: o.x - 40, y: o.y + 22)); wing.addLine(to: CGPoint(x: o.x - 18, y: o.y + 22)); wing.addLine(to: CGPoint(x: o.x + 14, y: o.y)); wing.closeSubpath()
         c.fill(wing, with: .color(dark))
@@ -1347,7 +1430,15 @@ enum CritterPainter {
     static func drawTable(_ s: CritterEngine.Snapshot, paddleL: Double, paddleR: Double, t: Double, in ctx: inout GraphicsContext) {
         let a = s.area, u = s.unit, r = s.drawRadius, top = s.groundY - r * 0.9 + r * 0.9   // the body floats 0.9R above the floor: the table top sits under it
         let tableTop = s.groundY - r * 0.05
-        ctx.fill(Path(CGRect(x: a.minX + 10 * u, y: tableTop, width: a.width - 20 * u, height: 10 * u)), with: .color(Color(red: 0.1, green: 0.45, blue: 0.3)))
+        // A shallow perspective top, bevel and shaded front fascia read at desktop size.
+        var surface = Path()
+        surface.move(to: CGPoint(x: a.minX + 20 * u, y: tableTop - 10 * u))
+        surface.addLine(to: CGPoint(x: a.maxX - 20 * u, y: tableTop - 10 * u))
+        surface.addLine(to: CGPoint(x: a.maxX - 10 * u, y: tableTop))
+        surface.addLine(to: CGPoint(x: a.minX + 10 * u, y: tableTop)); surface.closeSubpath()
+        ctx.fill(surface, with: .linearGradient(Gradient(colors: [Color(red: 0.20, green: 0.59, blue: 0.48), Color(red: 0.08, green: 0.35, blue: 0.29)]), startPoint: CGPoint(x: 0, y: tableTop - 10 * u), endPoint: CGPoint(x: 0, y: tableTop)))
+        ctx.stroke(surface, with: .color(.white.opacity(0.55)), lineWidth: 0.7 * u)
+        ctx.fill(Path(CGRect(x: a.minX + 10 * u, y: tableTop, width: a.width - 20 * u, height: 7 * u)), with: .linearGradient(Gradient(colors: [Color(red: 0.12, green: 0.42, blue: 0.34), Color(red: 0.025, green: 0.13, blue: 0.12)]), startPoint: CGPoint(x: 0, y: tableTop), endPoint: CGPoint(x: 0, y: tableTop + 7 * u)))
         ctx.fill(Path(CGRect(x: a.minX + 10 * u, y: tableTop, width: a.width - 20 * u, height: 2 * u)), with: .color(.white.opacity(0.85)))
         for lx in [a.minX + 30 * u, a.maxX - 30 * u] { ctx.fill(Path(CGRect(x: lx - 3 * u, y: tableTop + 10 * u, width: 6 * u, height: 12 * u)), with: .color(Color(white: 0.3))) }
         let mid = a.midX
@@ -1396,27 +1487,40 @@ enum CritterPainter {
         // A leg from the left: hip off-panel, thigh, knee, shin and a sneaker. Winds back, then snaps through from the hip
         // with the knee straightening — the way a real kick reads.
         let r = s.drawRadius, u = s.unit
-        let hip = CGPoint(x: s.anchorX - r * 2.6 - (1 - presence) * r * 4, y: s.groundY - r * 2.5)
+        let hip = CGPoint(x: s.anchorX - r * 2.6 - (1 - presence) * r * 4, y: s.groundY - r * 2.7)
         let wind = swing < 0.5 ? swing / 0.5 : 1, snap = swing < 0.5 ? 0 : (swing - 0.5) / 0.5
-        let thighDeg = 72 - 34 * wind + 88 * snap          // hip angle: 72° = hanging down-forward, back to 38°, through to 126°
-        let kneeDeg = 40 * wind - 40 * snap * 1.0            // knee bends on the wind-up, straightens on the strike
+        let thighDeg = 72 + 35 * wind - 78 * snap          // screen coordinates: wind back left, then swing forward right
+        let kneeDeg = 45 * wind * (1 - snap)            // knee bends on the wind-up, straightens on the strike
         let thighLen = r * 1.25, shinLen = r * 1.15, thick = 26 * u
         let ta = thighDeg * .pi / 180, knee = CGPoint(x: hip.x + cos(ta) * thighLen, y: hip.y + sin(ta) * thighLen)
-        let sa = (thighDeg - kneeDeg) * .pi / 180, ankle = CGPoint(x: knee.x + cos(sa) * shinLen, y: knee.y + sin(sa) * shinLen)
-        let trouser = Color(red: 0.22, green: 0.3, blue: 0.5), edge = Color(red: 0.12, green: 0.17, blue: 0.3)
-        var leg = Path(); leg.move(to: hip); leg.addLine(to: knee); leg.addLine(to: ankle)
-        ctx.stroke(leg, with: .color(edge), style: StrokeStyle(lineWidth: thick + 3 * u, lineCap: .round, lineJoin: .round))
-        ctx.stroke(leg, with: .color(trouser), style: StrokeStyle(lineWidth: thick, lineCap: .round, lineJoin: .round))
+        let sa = (thighDeg + kneeDeg) * .pi / 180, ankle = CGPoint(x: knee.x + cos(sa) * shinLen, y: knee.y + sin(sa) * shinLen)
+        // Anatomical thigh and calf, with a football sock ending below the knee.
+        func segment(_ a: CGPoint, _ b: CGPoint, widthA: Double, widthB: Double, colors: [Color]) {
+            let len = max(1, hypot(b.x - a.x, b.y - a.y)), nx = -(b.y - a.y) / len, ny = (b.x - a.x) / len
+            var p = Path(); p.move(to: CGPoint(x: a.x + nx * widthA, y: a.y + ny * widthA))
+            p.addQuadCurve(to: CGPoint(x: b.x + nx * widthB, y: b.y + ny * widthB), control: CGPoint(x: (a.x+b.x)/2 + nx * widthA, y: (a.y+b.y)/2 + ny * widthA))
+            p.addLine(to: CGPoint(x: b.x - nx * widthB, y: b.y - ny * widthB))
+            p.addQuadCurve(to: CGPoint(x: a.x - nx * widthA, y: a.y - ny * widthA), control: CGPoint(x: (a.x+b.x)/2 - nx * widthA, y: (a.y+b.y)/2 - ny * widthA)); p.closeSubpath()
+            ctx.fill(p, with: .linearGradient(Gradient(colors: colors), startPoint: CGPoint(x: a.x + nx * widthA, y: a.y + ny * widthA), endPoint: CGPoint(x: a.x - nx * widthA, y: a.y - ny * widthA)))
+        }
+        segment(hip, knee, widthA: thick * 0.55, widthB: thick * 0.34, colors: [Color(red: 0.96, green: 0.73, blue: 0.51), Color(red: 0.69, green: 0.43, blue: 0.29), Color(red: 0.38, green: 0.23, blue: 0.18)])
+        segment(knee, ankle, widthA: thick * 0.42, widthB: thick * 0.23, colors: [Color(red: 0.36, green: 0.58, blue: 0.87), Color(red: 0.12, green: 0.25, blue: 0.47), Color(red: 0.05, green: 0.10, blue: 0.20)])
+        let cuff = CGPoint(x: knee.x + (ankle.x-knee.x)*0.16, y: knee.y + (ankle.y-knee.y)*0.16)
+        var band = Path(); band.move(to: CGPoint(x: cuff.x - sin(sa)*thick*0.4, y: cuff.y + cos(sa)*thick*0.4)); band.addLine(to: CGPoint(x: cuff.x + sin(sa)*thick*0.4, y: cuff.y - cos(sa)*thick*0.4))
+        ctx.stroke(band, with: .color(.white.opacity(0.85)), lineWidth: 2*u)
         // Sneaker, hinged at the ankle and pointing along the shin.
         var shoe = ctx; shoe.translateBy(x: ankle.x, y: ankle.y); shoe.rotate(by: .radians(sa - .pi / 2 + 0.2))
         let L = 46 * u, H = 20 * u
         var sole = Path(); sole.addRoundedRect(in: CGRect(x: -L * 0.35, y: H * 0.55, width: L, height: H * 0.45), cornerSize: CGSize(width: 3 * u, height: 3 * u))
-        shoe.fill(sole, with: .color(Color(white: 0.25)))
+        shoe.fill(sole, with: .color(Color(white: 0.13)))
+        for x in [-0.23, 0.0, 0.27, 0.5] {
+            shoe.fill(Path(roundedRect: CGRect(x: L*x, y: H*0.87, width: 4*u, height: 4*u), cornerRadius: u), with: .color(Color(white: 0.55)))
+        }
         var upper = Path()
         upper.move(to: CGPoint(x: -L * 0.35, y: H * 0.6)); upper.addLine(to: CGPoint(x: -L * 0.35, y: -H * 0.25))
         upper.addQuadCurve(to: CGPoint(x: L * 0.15, y: -H * 0.1), control: CGPoint(x: -L * 0.05, y: -H * 0.3))
         upper.addQuadCurve(to: CGPoint(x: L * 0.65, y: H * 0.6), control: CGPoint(x: L * 0.6, y: H * 0.1)); upper.closeSubpath()
-        shoe.fill(upper, with: .color(Color(white: 0.96))); shoe.stroke(upper, with: .color(Color(white: 0.2)), lineWidth: max(1, 1.3 * u))
+        shoe.fill(upper, with: .linearGradient(Gradient(colors: [Color(white: 0.94), Color(white: 0.66), Color(white: 0.26)]), startPoint: CGPoint(x: 0, y: -H * 0.3), endPoint: CGPoint(x: 0, y: H * 0.7))); shoe.stroke(upper, with: .color(Color(white: 0.2)), lineWidth: max(1, 1.3 * u))
         shoe.fill(Path(roundedRect: CGRect(x: L * 0.42, y: H * 0.1, width: L * 0.23, height: H * 0.5), cornerRadius: 3 * u), with: .color(Color(white: 0.85)))
         var lace = Path(); for k in 0..<3 { let x = -L * 0.1 + Double(k) * L * 0.12; lace.move(to: CGPoint(x: x, y: -H * 0.05)); lace.addLine(to: CGPoint(x: x + L * 0.08, y: H * 0.25)) }
         shoe.stroke(lace, with: .color(Color(white: 0.45)), lineWidth: max(0.8, 1 * u))
@@ -1526,63 +1630,72 @@ enum CritterPainter {
         ctx.stroke(rays, with: .color(Color(red: 1, green: 0.9, blue: 0.4).opacity(0.5 * amount)), style: StrokeStyle(lineWidth: max(1, 2 * s.unit), lineCap: .round))
     }
     static func drawCat(_ s: CritterEngine.Snapshot, x: Double, dir: Double, paw: Double, meow: Bool, sit: Bool, walking: Bool, t: Double, in ctx: inout GraphicsContext) {
-        // An orange tabby: striped body, white muzzle, red collar with a yellow bow, curling tail. Faces `dir` (−1 = left).
         let r = s.drawRadius
         var c = ctx; c.translateBy(x: x, y: s.groundY); c.scaleBy(x: r / 46 * dir, y: r / 46)
-        let orange = Color(red: 0.93, green: 0.64, blue: 0.32), stripe = Color(red: 0.78, green: 0.45, blue: 0.18), lineC = Color(white: 0.15)
-        let step = walking && !s.still ? sin(t * 9) : 0
-        // tail
-        var tail = Path(); tail.move(to: CGPoint(x: -46, y: -30)); tail.addCurve(to: CGPoint(x: -72, y: -78), control1: CGPoint(x: -70, y: -34), control2: CGPoint(x: -84, y: -60))
-        c.stroke(tail, with: .color(orange), style: StrokeStyle(lineWidth: 12, lineCap: .round)); c.stroke(tail, with: .color(lineC), style: StrokeStyle(lineWidth: 14, lineCap: .round)); c.stroke(tail, with: .color(orange), style: StrokeStyle(lineWidth: 11, lineCap: .round))
-        // legs
-        for (i, lx) in [-30.0, -12.0, 14.0, 30.0].enumerated() {
-            let lift = sit ? 0 : (i % 2 == 0 ? step : -step) * 5
-            var leg = Path(); leg.addRoundedRect(in: CGRect(x: lx - 7, y: -30 - lift, width: 14, height: sit && i < 2 ? 18 : 30), cornerSize: CGSize(width: 6, height: 6))
-            c.fill(leg, with: .color(orange)); c.stroke(leg, with: .color(lineC), lineWidth: 2)
+        let fur = Color(red: 0.76, green: 0.43, blue: 0.20)
+        let light = Color(red: 0.98, green: 0.77, blue: 0.46)
+        let dark = Color(red: 0.32, green: 0.19, blue: 0.10)
+        let phase = walking && !s.still ? t * 7 : 0
+        func coat(_ path: Path, top: Double, bottom: Double, in g: inout GraphicsContext) {
+            g.fill(path, with: .linearGradient(Gradient(colors: [light, fur, dark]), startPoint: CGPoint(x: -20, y: top), endPoint: CGPoint(x: 20, y: bottom)))
         }
-        // body
-        let body = Path(ellipseIn: CGRect(x: -52, y: -74, width: 96, height: sit ? 70 : 60))
-        c.fill(body, with: .color(orange)); c.stroke(body, with: .color(lineC), lineWidth: 2.4)
-        var stripes = Path(); for sx in [-36.0, -22.0, -8.0] { stripes.move(to: CGPoint(x: sx, y: -72)); stripes.addQuadCurve(to: CGPoint(x: sx + 6, y: -50), control: CGPoint(x: sx - 6, y: -60)) }
-        var sc2 = c; sc2.clip(to: body); sc2.stroke(stripes, with: .color(stripe), style: StrokeStyle(lineWidth: 5, lineCap: .round))
-        // head
-        let head = CGPoint(x: 26, y: -78)
+        c.fill(Path(ellipseIn: CGRect(x: -56, y: -3, width: 104, height: 7)), with: .color(.black.opacity(0.18)))
+        // Tapered flexible tail, with a quieter tip following the body.
+        let wag = s.still ? 0 : sin(t * 1.7) * 7
+        var tail = Path(); tail.move(to: CGPoint(x: -39, y: -45))
+        tail.addCurve(to: CGPoint(x: -78, y: -83 + wag), control1: CGPoint(x: -76, y: -43), control2: CGPoint(x: -87, y: -67 + wag))
+        c.stroke(tail, with: .color(dark), style: StrokeStyle(lineWidth: 9, lineCap: .round))
+        c.stroke(tail, with: .color(fur), style: StrokeStyle(lineWidth: 6, lineCap: .round))
+        // Forelegs hinge at elbows; hind legs have a visible backwards hock.
+        func leg(_ rear: Bool, far: Bool) {
+            var g = c; if far { g.opacity = 0.72 }
+            let base = rear ? -34.0 : 27.0
+            let cycle = phase + (rear ? .pi : 0) + (far ? .pi : 0)
+            let travel = walking ? sin(cycle) * 10 : 0
+            let lift = walking ? max(0, cos(cycle)) * 7 : 0
+            let root = CGPoint(x: base, y: rear ? -40 : -48)
+            let joint = CGPoint(x: base + (rear ? 10 : -3) + travel * 0.3, y: -20)
+            let foot = CGPoint(x: base + travel + (sit && rear ? 13 : 0), y: -5 - lift)
+            var limb = Path(); limb.move(to: root); limb.addQuadCurve(to: foot, control: joint)
+            g.stroke(limb, with: .color(far ? dark : fur), style: StrokeStyle(lineWidth: rear ? 10 : 8, lineCap: .round))
+            coat(Path(ellipseIn: CGRect(x: foot.x - 4, y: foot.y - 3, width: 14, height: 8)), top: foot.y - 3, bottom: foot.y + 5, in: &g)
+        }
+        leg(true, far: true); leg(false, far: true)
+        let torso = Path(ellipseIn: CGRect(x: -48, y: sit ? -68 : -63, width: sit ? 67 : 90, height: sit ? 61 : 42))
+        coat(torso, top: -65, bottom: -20, in: &c)
+        var stripes = c; stripes.clip(to: torso)
+        for i in 0..<6 {
+            let xx = -37 + Double(i) * 12
+            var p = Path(); p.move(to: CGPoint(x: xx, y: -63)); p.addQuadCurve(to: CGPoint(x: xx + 3, y: -37), control: CGPoint(x: xx - 10, y: -49))
+            stripes.stroke(p, with: .color(dark.opacity(0.56)), style: StrokeStyle(lineWidth: 3.2, lineCap: .round))
+        }
+        leg(true, far: false); leg(false, far: false)
+        // Smaller skull, cheek and protruding muzzle replace the oversized cartoon face.
+        var head = c; head.translateBy(x: 31, y: sit ? -70 : -64)
+        head.rotate(by: .degrees(walking ? sin(phase) * 2 : 0))
         var ears = Path()
-        ears.move(to: CGPoint(x: head.x - 26, y: head.y - 8)); ears.addLine(to: CGPoint(x: head.x - 22, y: head.y - 40)); ears.addLine(to: CGPoint(x: head.x - 2, y: head.y - 22)); ears.closeSubpath()
-        ears.move(to: CGPoint(x: head.x + 26, y: head.y - 8)); ears.addLine(to: CGPoint(x: head.x + 22, y: head.y - 40)); ears.addLine(to: CGPoint(x: head.x + 2, y: head.y - 22)); ears.closeSubpath()
-        c.fill(ears, with: .color(orange)); c.stroke(ears, with: .color(lineC), style: StrokeStyle(lineWidth: 2.4, lineJoin: .round))
-        let face = Path(ellipseIn: CGRect(x: head.x - 32, y: head.y - 30, width: 64, height: 58))
-        c.fill(face, with: .color(orange)); c.stroke(face, with: .color(lineC), lineWidth: 2.4)
-        c.fill(Path(ellipseIn: CGRect(x: head.x - 16, y: head.y - 4, width: 32, height: 24)), with: .color(.white))
-        var fs = Path(); for sx in [-24.0, 18.0] { fs.move(to: CGPoint(x: head.x + sx, y: head.y - 26)); fs.addLine(to: CGPoint(x: head.x + sx + 4, y: head.y - 12)) }
-        c.stroke(fs, with: .color(stripe), style: StrokeStyle(lineWidth: 4, lineCap: .round))
-        if meow {
-            var e = Path()
-            for ex in [-13.0, 13.0] { e.move(to: CGPoint(x: head.x + ex - 6, y: head.y - 6)); e.addLine(to: CGPoint(x: head.x + ex, y: head.y - 12)); e.addLine(to: CGPoint(x: head.x + ex + 6, y: head.y - 6)) }
-            c.stroke(e, with: .color(lineC), style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
-            var mouth = Path(); mouth.move(to: CGPoint(x: head.x - 7, y: head.y + 8)); mouth.addQuadCurve(to: CGPoint(x: head.x, y: head.y + 12), control: CGPoint(x: head.x - 4, y: head.y + 13)); mouth.addQuadCurve(to: CGPoint(x: head.x + 7, y: head.y + 8), control: CGPoint(x: head.x + 4, y: head.y + 13))
-            c.stroke(mouth, with: .color(lineC), style: StrokeStyle(lineWidth: 2.2, lineCap: .round))
-        } else {
-            for ex in [-13.0, 13.0] { c.fill(Path(ellipseIn: CGRect(x: head.x + ex - 7, y: head.y - 18, width: 14, height: 18)), with: .color(lineC)); c.fill(Path(ellipseIn: CGRect(x: head.x + ex - 4, y: head.y - 15, width: 5, height: 6)), with: .color(.white)) }
-            c.fill(Path(ellipseIn: CGRect(x: head.x - 4, y: head.y + 2, width: 8, height: 6)), with: .color(Color(red: 0.5, green: 0.3, blue: 0.2)))
+        for xx in [-13.0, 9.0] {
+            ears.move(to: CGPoint(x: xx - 6, y: -10)); ears.addLine(to: CGPoint(x: xx - 2, y: -32)); ears.addLine(to: CGPoint(x: xx + 11, y: -15)); ears.closeSubpath()
         }
-        var wh = Path(); for (sx, dy) in [(-1.0, 4.0), (-1.0, 10.0), (1.0, 4.0), (1.0, 10.0)] { wh.move(to: CGPoint(x: head.x + sx * 16, y: head.y + dy)); wh.addLine(to: CGPoint(x: head.x + sx * 40, y: head.y + dy - 3)) }
-        c.stroke(wh, with: .color(lineC), lineWidth: 1.5)
-        // collar and bow
-        c.fill(Path(roundedRect: CGRect(x: head.x - 24, y: head.y + 24, width: 48, height: 8), cornerRadius: 4), with: .color(Color(red: 0.85, green: 0.15, blue: 0.15)))
-        var bow = Path()
-        bow.move(to: CGPoint(x: head.x, y: head.y + 30)); bow.addLine(to: CGPoint(x: head.x - 14, y: head.y + 22)); bow.addLine(to: CGPoint(x: head.x - 14, y: head.y + 38)); bow.closeSubpath()
-        bow.move(to: CGPoint(x: head.x, y: head.y + 30)); bow.addLine(to: CGPoint(x: head.x + 14, y: head.y + 22)); bow.addLine(to: CGPoint(x: head.x + 14, y: head.y + 38)); bow.closeSubpath()
-        c.fill(bow, with: .color(Color(red: 1, green: 0.85, blue: 0.2))); c.stroke(bow, with: .color(lineC), style: StrokeStyle(lineWidth: 1.6, lineJoin: .round))
-        c.fill(Path(ellipseIn: CGRect(x: head.x - 4, y: head.y + 26, width: 8, height: 8)), with: .color(Color(red: 0.9, green: 0.65, blue: 0.1)))
-        if meow {
-            // The cat's own little bubble, since it is not gluu bot talking.
-            var b = ctx; b.translateBy(x: x, y: s.groundY - r * 3.1)
-            let w = 70 * s.unit, h = 20 * s.unit
-            b.fill(Path(roundedRect: CGRect(x: -w / 2, y: -h / 2, width: w, height: h), cornerRadius: 7 * s.unit), with: .color(.white.opacity(0.96)))
-            b.stroke(Path(roundedRect: CGRect(x: -w / 2, y: -h / 2, width: w, height: h), cornerRadius: 7 * s.unit), with: .color(.black.opacity(0.12)), lineWidth: 0.5)
-            b.draw(Text("เหมียวว >w<").font(.system(size: 11 * s.unit * 1.15, weight: .medium, design: .monospaced)).foregroundColor(Color(white: 0.1)), at: .zero, anchor: .center)
+        coat(ears, top: -31, bottom: -8, in: &head)
+        for xx in [-13.0, 9.0] {
+            var inside = Path(); inside.move(to: CGPoint(x: xx - 2, y: -15)); inside.addLine(to: CGPoint(x: xx - 1, y: -26)); inside.addLine(to: CGPoint(x: xx + 6, y: -16)); inside.closeSubpath()
+            head.fill(inside, with: .color(Color(red: 0.64, green: 0.38, blue: 0.32)))
         }
+        coat(Path(ellipseIn: CGRect(x: -21, y: -22, width: 44, height: 39)), top: -24, bottom: 19, in: &head)
+        head.fill(Path(ellipseIn: CGRect(x: 2, y: 1, width: 27, height: 17)), with: .linearGradient(Gradient(colors: [Color(white: 0.93), Color(red: 0.76, green: 0.65, blue: 0.49)]), startPoint: CGPoint(x: 4, y: 1), endPoint: CGPoint(x: 12, y: 18)))
+        for xx in [-8.0, 13.0] {
+            var eye = Path(); eye.move(to: CGPoint(x: xx - 6, y: -5)); eye.addQuadCurve(to: CGPoint(x: xx + 6, y: -5), control: CGPoint(x: xx, y: meow ? -7 : -12)); eye.addQuadCurve(to: CGPoint(x: xx - 6, y: -5), control: CGPoint(x: xx, y: 0)); eye.closeSubpath()
+            head.fill(eye, with: .color(Color(red: 0.62, green: 0.69, blue: 0.28))); head.stroke(eye, with: .color(dark), lineWidth: 1)
+            head.fill(Path(ellipseIn: CGRect(x: xx - 1, y: -9, width: 2, height: 7)), with: .color(.black))
+            head.fill(Path(ellipseIn: CGRect(x: xx - 2, y: -8, width: 1.5, height: 1.5)), with: .color(.white))
+        }
+        var nose = Path(); nose.move(to: CGPoint(x: 19, y: 4)); nose.addLine(to: CGPoint(x: 28, y: 5)); nose.addLine(to: CGPoint(x: 23, y: 9)); nose.closeSubpath()
+        head.fill(nose, with: .color(Color(red: 0.42, green: 0.23, blue: 0.20)))
+        var whiskers = Path()
+        for i in 0..<3 { let y = 9 + Double(i) * 3; whiskers.move(to: CGPoint(x: 17, y: y)); whiskers.addLine(to: CGPoint(x: 42, y: y - 4 + Double(i) * 3)) }
+        head.stroke(whiskers, with: .color(.white.opacity(0.65)), lineWidth: 0.65)
+        if meow { head.fill(Path(ellipseIn: CGRect(x: 15, y: 13, width: 8, height: 5)), with: .color(dark)) }
     }
     static func drawCatPaw(_ s: CritterEngine.Snapshot, x: Double, dir: Double, paw: Double, in ctx: inout GraphicsContext) {
         // The front paw swinging out toward the body (drawn over everything so it reads as the hit).
@@ -1590,9 +1703,12 @@ enum CritterPainter {
         var c = ctx; c.translateBy(x: x, y: s.groundY); c.scaleBy(x: r / 46 * dir, y: r / 46)
         let swing = sin(paw * .pi)
         var p = c; p.translateBy(x: 40, y: -58); p.rotate(by: .degrees(-20 + 80 * swing))
-        let leg = Path(roundedRect: CGRect(x: -7, y: -4, width: 44, height: 14), cornerRadius: 7)
-        p.fill(leg, with: .color(Color(red: 0.93, green: 0.64, blue: 0.32))); p.stroke(leg, with: .color(Color(white: 0.15)), lineWidth: 2)
-        p.fill(Path(ellipseIn: CGRect(x: 30, y: -6, width: 16, height: 18)), with: .color(Color(red: 0.93, green: 0.64, blue: 0.32))); p.stroke(Path(ellipseIn: CGRect(x: 30, y: -6, width: 16, height: 18)), with: .color(Color(white: 0.15)), lineWidth: 2)
+        var leg = Path(); leg.move(to: CGPoint(x: -4, y: -5)); leg.addQuadCurve(to: CGPoint(x: 35, y: -2), control: CGPoint(x: 16, y: -9)); leg.addLine(to: CGPoint(x: 36, y: 7)); leg.addQuadCurve(to: CGPoint(x: -4, y: 8), control: CGPoint(x: 16, y: 11)); leg.closeSubpath()
+        let coat = Gradient(colors: [Color(red: 0.98, green: 0.77, blue: 0.46), Color(red: 0.76, green: 0.43, blue: 0.20), Color(red: 0.32, green: 0.19, blue: 0.10)])
+        p.fill(leg, with: .linearGradient(coat, startPoint: CGPoint(x: 0, y: -7), endPoint: CGPoint(x: 0, y: 10)))
+        p.fill(Path(ellipseIn: CGRect(x: 29, y: -3, width: 16, height: 13)), with: .linearGradient(coat, startPoint: CGPoint(x: 30, y: -3), endPoint: CGPoint(x: 30, y: 10)))
+        for y in [1.0, 5.0] { var toe = Path(); toe.move(to: CGPoint(x: 40, y: y)); toe.addLine(to: CGPoint(x: 44, y: y)); p.stroke(toe, with: .color(.brown.opacity(0.5)), lineWidth: 0.8) }
+
     }
     static func drawTowel(in c: inout GraphicsContext) {
         var towel = Path(); towel.addRoundedRect(in: CGRect(x: -70, y: 40, width: 140, height: 14), cornerSize: CGSize(width: 4, height: 4))
@@ -1633,10 +1749,11 @@ enum CritterPainter {
         var seams = Path(); seams.move(to: CGPoint(x: -2, y: -2)); seams.addLine(to: CGPoint(x: 6, y: -2)); seams.move(to: CGPoint(x: -2, y: 5)); seams.addLine(to: CGPoint(x: 6, y: 5))
         h.stroke(seams, with: .color(line.opacity(0.5)), lineWidth: 1)
     }
-    static func drawBoard(t: Double, still: Bool, in c: inout GraphicsContext) {
+    static func drawBoard(t: Double, flip: Double, still: Bool, in c: inout GraphicsContext) {
         var b = c; b.translateBy(x: 0, y: 46)
+        b.scaleBy(x: 1, y: cos(flip * .pi * 2))
         let deck = Path(roundedRect: CGRect(x: -58, y: 2, width: 116, height: 8), cornerRadius: 4)
-        b.fill(deck, with: .color(Color(red: 0.55, green: 0.35, blue: 0.2)))
+        b.fill(deck, with: .linearGradient(Gradient(colors: [Color(red: 0.82, green: 0.61, blue: 0.37), Color(red: 0.31, green: 0.17, blue: 0.09)]), startPoint: CGPoint(x: 0, y: 2), endPoint: CGPoint(x: 0, y: 10)))
         b.fill(Path(roundedRect: CGRect(x: -50, y: 2, width: 100, height: 3), cornerRadius: 1.5), with: .color(Color(white: 0.2)))
         for wx in [-36.0, 36.0] {
             b.fill(Path(ellipseIn: CGRect(x: wx - 7, y: 10, width: 14, height: 14)), with: .color(Color(red: 0.95, green: 0.4, blue: 0.3)))
@@ -1781,10 +1898,21 @@ enum CritterPainter {
         c.fill(Path(ellipseIn: CGRect(x: o.x - r * 0.5, y: o.y + len - r * 0.4, width: r * 0.5, height: r * 0.5)), with: .color(.white.opacity(0.5 * amount)))
     }
     static func pill(_ e: Critter.Eye, at a: CGPoint, gaze: CGPoint, blink: Double) -> Path {
-        let x = a.x + e.dx + gaze.x, y = a.y + e.dy + gaze.y, h = blink > 0.5 ? 2.5 : e.h
+        let closure = min(1, max(0, blink))
+        let x = a.x + e.dx + gaze.x, y = a.y + e.dy + gaze.y, h = e.h * (1 - closure) + 3.6 * closure
         let rect = CGRect(x: x - e.w / 2, y: y - h / 2, width: e.w, height: h)
-        return Path(roundedRect: rect, cornerRadius: e.w / 2, style: .continuous)
-            .applying(CGAffineTransform(translationX: x, y: y).rotated(by: e.r * .pi / 180).translatedBy(x: -x, y: -y))
+        var shape = Path(roundedRect: rect, cornerRadius: min(e.w, h) / 2, style: .continuous)
+        if e.lid > 0.001 && closure < 0.95 {
+            let trim = e.lid * h * 0.65 * (1 - closure)
+            let slope = e.lidSlope * e.w * 0.5 * (1 - closure)
+            var aperture = Path()
+            aperture.move(to: CGPoint(x: rect.minX - 1, y: rect.minY + trim - slope))
+            aperture.addLine(to: CGPoint(x: rect.maxX + 1, y: rect.minY + trim + slope))
+            aperture.addLine(to: CGPoint(x: rect.maxX + 1, y: rect.maxY + 1))
+            aperture.addLine(to: CGPoint(x: rect.minX - 1, y: rect.maxY + 1)); aperture.closeSubpath()
+            shape = shape.intersection(aperture)
+        }
+        return shape.applying(CGAffineTransform(translationX: x, y: y).rotated(by: e.r * (1 - closure * 0.65) * .pi / 180).translatedBy(x: -x, y: -y))
     }
 }
 
@@ -1957,6 +2085,8 @@ struct FlowButtons: View {
 final class CritterPanel: NSPanel {
     override var canBecomeKey: Bool { false }
     let engine: CritterEngine
+    private var dragOrigin: CGPoint?
+    private var dragPointer = CGPoint.zero
     init(engine: CritterEngine) {
         self.engine = engine
         super.init(contentRect: NSRect(origin: .zero, size: engine.panelSize), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -1966,6 +2096,7 @@ final class CritterPanel: NSPanel {
         let host = NSHostingView(rootView: CritterView(engine: engine))
         host.frame = NSRect(origin: .zero, size: engine.panelSize)
         contentView = host
+        engine.onReposition = { [weak self] active in self?.reposition(active: active) }
         engine.mouseAnywhere = { [weak self] in
             guard let self, self.isVisible else { return nil }
             let m = NSEvent.mouseLocation
@@ -1977,13 +2108,35 @@ final class CritterPanel: NSPanel {
             guard self.frame.contains(m) else { return nil }
             let local = CGPoint(x: m.x - self.frame.minX, y: self.frame.maxY - m.y)
             // Let clicks through everywhere except on the body.
-            let onBody = self.engine.hit(local) || self.engine.menuRect().contains(local)
+            let onBody = self.engine.repositioning || self.engine.hit(local) || self.engine.menuRect().contains(local)
             if self.ignoresMouseEvents == onBody { self.ignoresMouseEvents = !onBody }
             return local
         }
     }
+    private func reposition(active: Bool) {
+        guard active else {
+            if dragOrigin != nil {
+                UserDefaults.standard.set([frame.origin.x, frame.origin.y], forKey: "gluuPanelOrigin")
+            }
+            dragOrigin = nil; return
+        }
+        let pointer = NSEvent.mouseLocation
+        if dragOrigin == nil { dragOrigin = frame.origin; dragPointer = pointer }
+        guard let origin = dragOrigin,
+              let screen = NSScreen.screens.first(where: { $0.frame.contains(pointer) }) ?? screen ?? NSScreen.main else { return }
+        let target = CGPoint(x: origin.x + pointer.x - dragPointer.x, y: origin.y + pointer.y - dragPointer.y)
+        setFrameOrigin(Critter.panelOrigin(target, size: frame.size, visible: screen.visibleFrame))
+        ignoresMouseEvents = false
+    }
     /// Bottom-right of the visible area of the screen the pointer is on, above the Dock.
     func place() {
+        guard dragOrigin == nil else { return }
+        if let saved = UserDefaults.standard.array(forKey: "gluuPanelOrigin") as? [Double], saved.count == 2, saved.allSatisfy({ $0.isFinite }),
+           let fallback = NSScreen.main ?? NSScreen.screens.first {
+            let point = CGPoint(x: saved[0], y: saved[1])
+            let screen = NSScreen.screens.first { $0.frame.contains(CGPoint(x: point.x + engine.panelSize.width / 2, y: point.y + engine.panelSize.height / 2)) } ?? fallback
+            setFrameOrigin(Critter.panelOrigin(point, size: engine.panelSize, visible: screen.visibleFrame)); return
+        }
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main ?? NSScreen.screens[0]
         let v = screen.visibleFrame

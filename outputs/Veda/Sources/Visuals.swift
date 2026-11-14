@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import ImageIO
 
 enum WaveformIcon {
     static func menuImage() -> NSImage {
@@ -17,6 +18,139 @@ enum WaveformIcon {
 
 // Offscreen visual QA. No delegate, event monitors, timers, microphone, or backend.
 enum OverlaySnapshots {
+    /// Review actual painter + deterministic live-engine steps. No app delegate or recording.
+    static func renderActing(to directory: String) throws {
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        func capture(_ samples: [(String, CritterEngine.Snapshot)], columns: Int, compact: Bool = false) -> CGImage? {
+            let cell = CGSize(width: 180, height: compact ? 130 : 155)
+            let size = CGSize(width: cell.width * Double(columns), height: cell.height * Double((samples.count + columns - 1) / columns))
+            let canvas = Canvas { context, _ in
+                for (index, sample) in samples.enumerated() {
+                    let x = Double(index % columns) * cell.width, y = Double(index / columns) * cell.height
+                    context.fill(Path(CGRect(x: x, y: y, width: cell.width, height: cell.height)), with: .color(Color(white: index % 2 == 0 ? 0.88 : 0.17)))
+                    var s = sample.1
+                    let ground = y + cell.height - 28
+                    s.center = CGPoint(x: x + cell.width / 2, y: ground - s.drawRadius)
+                    s.groundY = ground; s.area = CGRect(x: x, y: y, width: cell.width, height: cell.height)
+                    CritterPainter.draw(s, in: &context)
+                    context.draw(Text(sample.0).font(.system(size: 12, weight: .medium)).foregroundColor(index % 2 == 0 ? .black : .white), at: CGPoint(x: x + cell.width / 2, y: ground + 15))
+                }
+            }.frame(width: size.width, height: size.height)
+            let frame = NSRect(origin: .zero, size: size)
+            let window = NSWindow(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            let host = NSHostingView(rootView: canvas); host.frame = frame; window.contentView = host
+            host.layoutSubtreeIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.015))
+            defer { window.close() }
+            guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return nil }
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            return bitmap.cgImage
+        }
+        func writePNG(_ image: CGImage, name: String) throws {
+            let bitmap = NSBitmapImageRep(cgImage: image)
+            if let data = bitmap.representation(using: .png, properties: [:]) {
+                try data.write(to: URL(fileURLWithPath: directory + "/" + name + ".png"))
+            }
+        }
+        for radius in [24.0, 44.0] {
+            let samples = Critter.Mood.allCases.map { mood -> (String, CritterEngine.Snapshot) in
+                let engine = CritterEngine(radius: radius)
+                engine.quiet = true; engine.weatherEnabled = false; engine.settle(mood: mood)
+                return (mood.rawValue, engine.snapshot)
+            }
+            if let image = capture(samples, columns: 5, compact: radius == 24) { try writePNG(image, name: "expressions-\(Int(radius))") }
+        }
+        let moods: [Critter.Mood] = [.normal, .curious, .happy, .startled, .sad, .annoyed, .thinking, .laugh]
+        let engines = moods.map { _ -> CritterEngine in
+            let engine = CritterEngine(radius: 36)
+            engine.quiet = true; engine.weatherEnabled = false; engine.eyeTracking = false
+            engine.settle(mood: .normal)
+            return engine
+        }
+        let url = URL(fileURLWithPath: directory + "/acting.gif")
+        guard let gif = CGImageDestinationCreateWithURL(url as CFURL, "com.compuserve.gif" as CFString, 90, nil) else { return }
+        CGImageDestinationSetProperties(gif, [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFLoopCount: 0]] as CFDictionary)
+        var bounds = [String: [Double]]()
+        for frame in 0..<90 {
+            for (index, engine) in engines.enumerated() {
+                if frame == 9 { engine.setMood(moods[index], hold: 10, speak: false) }
+                if frame == 51 && index == 0 { engine.reviewBlink() }
+                engine.reviewStep()
+                let face = engine.snapshot.face
+                let values = [face.left.w, face.left.h, face.right.w, face.right.h, face.tilt, face.sx, face.sy, engine.snapshot.blink]
+                precondition(values.allSatisfy { $0.isFinite } && face.sx > 0 && face.sy > 0, "Invalid acting frame")
+                bounds["\(moods[index].rawValue)-\(frame)"] = values
+            }
+            if let image = capture(zip(moods, engines).map { ($0.0.rawValue, $0.1.snapshot) }, columns: 4) {
+                CGImageDestinationAddImage(gif, image, [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFDelayTime: 1.0 / 30]] as CFDictionary)
+                if [9, 12, 18, 30, 53, 57].contains(frame) { try writePNG(image, name: "acting-frame-\(frame)") }
+            }
+        }
+        guard CGImageDestinationFinalize(gif) else { throw NSError(domain: "VedaActingReview", code: 1) }
+        let metrics = try JSONSerialization.data(withJSONObject: bounds, options: [.sortedKeys])
+        try metrics.write(to: URL(fileURLWithPath: directory + "/acting-frames.json"))
+        print("Rendered 29 expressions at radius 24 and 44, plus 90 frames of eight live-engine reactions.")
+    }
+    static func renderSceneMotion(to directory: String) throws {
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        for scene in Critter.Scene.allCases {
+            let engine = CritterEngine(radius: 24)
+            engine.paused = true; engine.quiet = true; engine.weatherEnabled = false; engine.eyeTracking = false
+            engine.perform(scene: scene)
+            for _ in 0..<Int((Critter.sceneDuration(scene) + 0.2) * 60) {
+                engine.reviewStep(dt: 1.0 / 60)
+                let s = engine.snapshot
+                precondition(s.center.x.isFinite && s.center.y.isFinite && s.squash.isFinite, "Non-finite scene state: \(scene)")
+            }
+            precondition(engine.scene == nil, "Scene did not complete: \(scene)")
+        }
+        print("All \(Critter.Scene.allCases.count) scene timelines completed with finite live-engine states.")
+        let scenes: [Critter.Scene] = [.pingpong, .plane, .skateboard, .manhole, .balloon, .rainUmbrella]
+        let engines = scenes.map { scene -> CritterEngine in
+            let e = CritterEngine(radius: 24)
+            e.paused = true; e.quiet = true; e.weatherEnabled = false; e.eyeTracking = false
+            e.perform(scene: scene); return e
+        }
+        let cell = engines[0].panelSize
+        let size = CGSize(width: cell.width * 3, height: cell.height * 2)
+        let url = URL(fileURLWithPath: directory + "/scenes.gif")
+        guard let gif = CGImageDestinationCreateWithURL(url as CFURL, "com.compuserve.gif" as CFString, 165, nil) else { return }
+        CGImageDestinationSetProperties(gif, [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFLoopCount: 0]] as CFDictionary)
+        var positions = [[Double]]()
+        for frame in 0..<165 {
+            // Four 60 Hz live-engine steps per displayed frame. Keep the real positions.
+            for engine in engines { for _ in 0..<4 { engine.reviewStep(dt: 1.0 / 60) } }
+            let samples = engines.map { $0.snapshot }
+            positions.append(samples.flatMap { [$0.center.x, $0.center.y] })
+            let canvas = Canvas { ctx, _ in
+                for i in samples.indices {
+                    var c = ctx; c.translateBy(x: Double(i % 3) * cell.width, y: Double(i / 3) * cell.height)
+                    c.fill(Path(CGRect(origin: .zero, size: cell)), with: .color(Color(white: 0.16)))
+                    CritterPainter.draw(samples[i], in: &c)
+                    c.draw(Text(scenes[i].rawValue).font(.system(size: 12)).foregroundColor(.white), at: CGPoint(x: cell.width / 2, y: 16))
+                }
+            }.frame(width: size.width, height: size.height)
+            let rect = CGRect(origin: .zero, size: size)
+            let window = NSWindow(contentRect: rect, styleMask: .borderless, backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            let host = NSHostingView(rootView: canvas); host.frame = rect; window.contentView = host
+            host.layoutSubtreeIfNeeded(); RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+            if let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+                host.cacheDisplay(in: host.bounds, to: bitmap)
+                if let image = bitmap.cgImage {
+                    CGImageDestinationAddImage(gif, image, [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFDelayTime: 1.0 / 15]] as CFDictionary)
+                    if [8, 39, 44, 71, 89, 92, 97].contains(frame), let data = bitmap.representation(using: .png, properties: [:]) {
+                        try data.write(to: URL(fileURLWithPath: directory + "/scene-\(frame).png"))
+                    }
+                }
+            }
+            window.close()
+        }
+        guard CGImageDestinationFinalize(gif) else { throw NSError(domain: "SceneReview", code: 1) }
+        try JSONSerialization.data(withJSONObject: positions).write(to: URL(fileURLWithPath: directory + "/positions.json"))
+        print("Rendered 11 seconds of six live scene timelines, 660 simulation steps each.")
+    }
     static func render(to directory: String) throws {
         try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
         let scenarios: [(String, Phase, String?)] = [("idle", .idle, nil), ("listening", .recording, nil), ("processing", .processing, nil), ("held", .idle, "ข้อความพักไว้"), ("permission", .idle, "อนุญาตไมโครโฟนก่อนพูด")]

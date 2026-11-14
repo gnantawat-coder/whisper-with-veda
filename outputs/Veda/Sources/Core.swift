@@ -613,8 +613,11 @@ enum Critter {
     }
     struct Eye: Equatable {
         var w: Double, h: Double, r: Double, dx: Double, dy: Double
+        // A lid trims the luminous shape itself; no separate eyebrow or facial feature.
+        var lid = 0.0, lidSlope = 0.0
         static func lerp(_ a: Eye, _ b: Eye, _ k: Double) -> Eye {
-            Eye(w: a.w + (b.w - a.w) * k, h: a.h + (b.h - a.h) * k, r: a.r + (b.r - a.r) * k, dx: a.dx + (b.dx - a.dx) * k, dy: a.dy + (b.dy - a.dy) * k)
+            Eye(w: a.w + (b.w - a.w) * k, h: a.h + (b.h - a.h) * k, r: a.r + (b.r - a.r) * k, dx: a.dx + (b.dx - a.dx) * k, dy: a.dy + (b.dy - a.dy) * k,
+                lid: a.lid + (b.lid - a.lid) * k, lidSlope: a.lidSlope + (b.lidSlope - a.lidSlope) * k)
         }
     }
     /// One pose. `front` is how far the face turns toward the viewer (0 = the reference
@@ -632,34 +635,34 @@ enum Critter {
     // Emotions that read through symmetry face the viewer; ones that read through gaze direction stay turned.
     static let expressions: [Mood: Expression] = [
         .normal:   Expression(front: 0, left: restLeft, right: restRight),
-        .bored:    Expression(front: 0, left: Eye(w: 9, h: 11, r: 22, dx: 0, dy: 3), right: Eye(w: 9, h: 11, r: 22, dx: 0, dy: 7), says: ["......", "-_-", "..."]),
+        .bored:    Expression(front: 0.35, left: Eye(w: 12, h: 17, r: 2, dx: 0, dy: 2, lid: 0.64), right: Eye(w: 12, h: 17, r: 2, dx: 0, dy: 5, lid: 0.64), says: ["......", "-_-", "..."]),
         .thinking: Expression(front: 0.2, left: Eye(w: 9, h: 16, r: 28, dx: 10, dy: -8), right: Eye(w: 9, h: 17, r: 28, dx: 10, dy: -4), says: ["..."]),
-        .sleepy:   Expression(front: 0.3, left: Eye(w: 9, h: 5, r: 16, dx: 0, dy: 6), right: Eye(w: 9, h: 5, r: 16, dx: 0, dy: 8), sy: 0.95, slowBreath: true, says: ["zZ", "zzZ"]),
-        .asleep:   Expression(front: 0.3, left: Eye(w: 9, h: 3, r: 16, dx: 0, dy: 7), right: Eye(w: 9, h: 3, r: 16, dx: 0, dy: 9), sy: 0.93, slowBreath: true, sticky: true, says: ["z z z"]),
+        .sleepy:   Expression(front: 0.65, left: Eye(w: 14, h: 13, r: 3, dx: 0, dy: 4, lid: 0.75), right: Eye(w: 14, h: 13, r: -3, dx: 0, dy: 6, lid: 0.75), sy: 0.95, slowBreath: true, says: ["zZ", "zzZ"]),
+        .asleep:   Expression(front: 0.65, left: Eye(w: 15, h: 3.6, r: 0, dx: 0, dy: 7), right: Eye(w: 15, h: 3.6, r: 0, dx: 0, dy: 7), sy: 0.93, slowBreath: true, sticky: true, says: ["z z z"]),
         .curious:  Expression(front: 0.6, left: Eye(w: 9, h: 25, r: -8, dx: 0, dy: -5), right: Eye(w: 9, h: 19, r: 10, dx: 0, dy: 4), tilt: -7, says: ["?", "??", "อืม?"]),
         .happy:    Expression(front: 1, left: restLeft, right: restRight, arc: true, spark: true, says: ["^^", "^_^", "~♪"]),
         .done:     Expression(front: 1, left: restLeft, right: restRight, arc: true, spark: true, says: ["^^", "เสร็จ!"]),
         .shy:      Expression(front: 1, left: Eye(w: 9, h: 14, r: -6, dx: -3, dy: 8), right: Eye(w: 9, h: 14, r: 6, dx: -3, dy: 8), tilt: 4, blush: true, says: ["///", "/////", ">///<"]),
-        .sad:      Expression(front: 1, left: Eye(w: 9, h: 15, r: -14, dx: 0, dy: 5), right: Eye(w: 9, h: 15, r: 14, dx: 0, dy: 5), sy: 0.94, tear: true, says: ["TT", "T_T", ";_;"]),
+        .sad:      Expression(front: 1, left: Eye(w: 12, h: 20, r: 0, dx: 0, dy: 5, lid: 0.4, lidSlope: -0.65), right: Eye(w: 12, h: 20, r: 0, dx: 0, dy: 5, lid: 0.4, lidSlope: 0.65), sy: 0.94, tear: true, says: ["TT", "T_T", ";_;"]),
         .wow:      Expression(front: 1, left: Eye(w: 12, h: 27, r: -4, dx: 0, dy: -1), right: Eye(w: 12, h: 28, r: 4, dx: 0, dy: -1), sx: 0.94, sy: 1.08, wow: true, says: ["!", "ว้าว"]),
         .startled: Expression(front: 1, left: Eye(w: 13, h: 28, r: -3, dx: 0, dy: -1), right: Eye(w: 13, h: 29, r: 3, dx: 0, dy: -1), shake: true, says: ["!!"]),
-        .worried:  Expression(front: 1, left: Eye(w: 9, h: 19, r: -12, dx: 0, dy: 2), right: Eye(w: 9, h: 19, r: 12, dx: 0, dy: 2), says: ["…?"]),
+        .worried:  Expression(front: 1, left: Eye(w: 11, h: 24, r: -3, dx: 0, dy: 0, lid: 0.23, lidSlope: -0.5), right: Eye(w: 11, h: 24, r: 3, dx: 0, dy: 0, lid: 0.23, lidSlope: 0.5), says: ["…?"]),
         .dizzy:    Expression(front: 1, left: Eye(w: 9, h: 14, r: 40, dx: 0, dy: 2), right: Eye(w: 9, h: 14, r: -40, dx: 0, dy: 2), says: ["@_@"]),
         .peek:     Expression(front: 1, left: Eye(w: 9, h: 26, r: -3, dx: 0, dy: -6), right: Eye(w: 9, h: 27, r: 3, dx: 0, dy: -6), sx: 0.9, sy: 1.28, says: ["?"]),
         .cold:     Expression(front: 0.8, left: Eye(w: 9, h: 16, r: -3, dx: 0, dy: 2), right: Eye(w: 9, h: 16, r: 3, dx: 0, dy: 2), shake: true, says: ["brr"]),
         .listening: Expression(front: 1, left: Eye(w: 11, h: 26, r: -4, dx: 0, dy: -2), right: Eye(w: 11, h: 27, r: 4, dx: 0, dy: -2), sx: 0.97, sy: 1.03, rings: true),
-        .annoyed:  Expression(front: 1, left: Eye(w: 9, h: 16, r: 34, dx: 0, dy: 1), right: Eye(w: 9, h: 16, r: -34, dx: 0, dy: 1), says: [">_<"]),
+        .annoyed:  Expression(front: 1, left: Eye(w: 13, h: 19, r: 0, dx: 0, dy: 1, lid: 0.45, lidSlope: 0.7), right: Eye(w: 13, h: 19, r: 0, dx: 0, dy: 1, lid: 0.45, lidSlope: -0.7), says: [">_<"]),
         // No hands: the goodbye is a soft smile, a head tilt, and the words.
         .bye:      Expression(front: 1, left: restLeft, right: restRight, tilt: 9, arc: true, says: ["บ๊ายบาย~", "ไปแป๊บ", "เดี๋ยวมา"]),
         .back:     Expression(front: 1, left: restLeft, right: restRight, arc: true, spark: true, says: ["กลับมาแล้ว", "ทาดา~"]),
         // Care: needs read through posture (droop, turn away) and the words.
-        .hungry:   Expression(front: 1, left: Eye(w: 9, h: 14, r: -10, dx: 0, dy: 6), right: Eye(w: 9, h: 14, r: 10, dx: 0, dy: 6), sy: 0.95, says: ["กร๊อกกก", "หิว…", "ขอกินหน่อย"]),
-        .sulky:    Expression(front: 0, left: Eye(w: 9, h: 12, r: 30, dx: -4, dy: 4), right: Eye(w: 9, h: 12, r: 30, dx: -4, dy: 8), tilt: -5, says: ["หึ", "ไม่คุยด้วย", "..."]),
+        .hungry:   Expression(front: 1, left: Eye(w: 11, h: 20, r: -4, dx: 0, dy: 5, lid: 0.5, lidSlope: -0.35), right: Eye(w: 11, h: 20, r: 4, dx: 0, dy: 5, lid: 0.5, lidSlope: 0.35), sy: 0.95, says: ["กร๊อกกก", "หิว…", "ขอกินหน่อย"]),
+        .sulky:    Expression(front: 0.15, left: Eye(w: 12, h: 17, r: 12, dx: -3, dy: 4, lid: 0.6, lidSlope: 0.3), right: Eye(w: 12, h: 17, r: 12, dx: -3, dy: 8, lid: 0.6, lidSlope: 0.3), tilt: -5, says: ["หึ", "ไม่คุยด้วย", "..."]),
         .loved:    Expression(front: 1, left: restLeft, right: restRight, arc: true, blush: true, spark: true, says: ["♥", "♥♥", "ชอบ~"]),
         .laugh:    Expression(front: 1, left: restLeft, right: restRight, sx: 1.06, sy: 0.96, arc: true, spark: true, says: ["ฮ่าฮ่าฮ่า!", "555", "ฮ่า~"]),
-        .full:     Expression(front: 0.5, left: Eye(w: 9, h: 8, r: 16, dx: 0, dy: 6), right: Eye(w: 9, h: 8, r: 16, dx: 0, dy: 8), sx: 1.1, sy: 1.04, slowBreath: true, says: ["อิ่ม~", "อิ่มจัง"]),
+        .full:     Expression(front: 0.5, left: Eye(w: 14, h: 10, r: 6, dx: 0, dy: 5, lid: 0.5), right: Eye(w: 14, h: 10, r: 6, dx: 0, dy: 7, lid: 0.5), sx: 1.1, sy: 1.04, slowBreath: true, says: ["อิ่ม~", "อิ่มจัง"]),
         .hot:      Expression(front: 0.8, left: Eye(w: 9, h: 12, r: -4, dx: 0, dy: 4), right: Eye(w: 9, h: 12, r: 4, dx: 0, dy: 4), sy: 0.97, tear: true, says: ["ร้อนน~", "ฮ่อก ฮ่อก"]),
-        .zen:      Expression(front: 1, left: Eye(w: 12, h: 3, r: 90, dx: 0, dy: 2), right: Eye(w: 12, h: 3, r: 90, dx: 0, dy: 2), slowBreath: true, says: ["อืมมม~", "สงบ…"]),
+        .zen:      Expression(front: 1, left: Eye(w: 15, h: 3, r: 0, dx: 0, dy: 2), right: Eye(w: 15, h: 3, r: 0, dx: 0, dy: 2), slowBreath: true, says: ["อืมมม~", "สงบ…"]),
         // Out of breath: half-shut eyes, a sweat drop, and the body heaving (the engine speeds the breath up).
         .pant:     Expression(front: 0.9, left: Eye(w: 10, h: 9, r: -8, dx: 0, dy: 5), right: Eye(w: 10, h: 9, r: 8, dx: 0, dy: 5), sy: 0.94, tear: true, says: ["ฮึบ… ฮึบ…", "หอบ…"]),
         .groove:   Expression(front: 1, left: restLeft, right: restRight, spark: true, says: ["♪", "♪♪", "เต้น~"]),
@@ -671,6 +674,64 @@ enum Critter {
     /// The body narrows a little half-way through a turn, which is what sells rotation on a flat circle.
     static func turnSqueeze(front f: Double) -> Double { 1 - 0.07 * sin(f * .pi) }
 
+    /// Timed acting accents. Eyes arrive before the body, then the pose settles.
+    /// Values are small enough to compose with scene physics without shifting contacts.
+    struct Acting {
+        var gazeX = 0.0, gazeY = 0.0, tilt = 0.0, sx = 1.0, sy = 1.0
+        var eyeScale = 1.0
+    }
+    static func acting(_ mood: Mood, age: Double, still: Bool = false) -> Acting {
+        guard !still else { return Acting() }
+        let t = max(0, age)
+        func pulse(_ start: Double, _ duration: Double) -> Double {
+            let q = (t - start) / duration
+            return q > 0 && q < 1 ? sin(q * .pi) : 0
+        }
+        var a = Acting()
+        switch mood {
+        case .happy, .done, .back, .loved:
+            let prepare = pulse(0, 0.16), release = pulse(0.16, 0.42)
+            a.sx = 1 + prepare * 0.05 - release * 0.025
+            a.sy = 1 - prepare * 0.055 + release * 0.035
+            a.tilt = sin(t * 8) * exp(-t * 2.8) * 3
+        case .laugh:
+            let giggle = sin(t * 11) * min(1, t * 5)
+            a.sy = 1 + giggle * 0.025; a.sx = 1 - giggle * 0.018
+            a.tilt = sin(t * 5.5) * 2
+        case .curious:
+            a.gazeX = -2.5 * pulse(0, 0.45); a.gazeY = -2 * pulse(0, 0.8)
+            a.tilt = -5 * pulse(0.16, 0.9); a.eyeScale = 1 + 0.08 * pulse(0, 0.35)
+        case .startled, .wow:
+            a.eyeScale = 1 + 0.13 * pulse(0, 0.25)
+            a.sy = 1 + 0.045 * pulse(0.07, 0.3)
+            a.sx = 1 - 0.035 * pulse(0.07, 0.3)
+            a.tilt = 3 * pulse(0.12, 0.45)
+        case .sad, .worried, .hungry:
+            a.gazeY = 1.8 * min(1, t / 0.45)
+            a.tilt = -2 * pulse(0.25, 1.1)
+        case .shy, .sulky:
+            a.gazeX = -2.5 * min(1, t / 0.35); a.gazeY = 1.5
+            a.tilt = 3 * pulse(0.2, 0.8)
+        case .thinking:
+            a.gazeX = 1.5; a.gazeY = -1.5
+            a.tilt = 1.5 * sin(t * 1.7)
+        case .annoyed:
+            a.sx = 1 + 0.025 * pulse(0.08, 0.35)
+            a.sy = 1 - 0.025 * pulse(0.08, 0.35)
+        default: break
+        }
+        return a
+    }
+    /// Quick close, a brief closed hold, then a slower open; finite at either endpoint.
+    static func blinkClosure(elapsed: Double, duration: Double) -> Double {
+        guard duration > 0, elapsed > 0, elapsed < duration else { return 0 }
+        let p = elapsed / duration
+        func smooth(_ x: Double) -> Double { x * x * (3 - 2 * x) }
+        if p < 0.32 { return smooth(p / 0.32) }
+        if p < 0.46 { return 1 }
+        return 1 - smooth((p - 0.46) / 0.54)
+    }
+
     /// The blended face on screen; approaches the target expression a little every frame.
     struct Face {
         var left = restLeft, right = restRight
@@ -679,8 +740,8 @@ enum Critter {
         mutating func approach(_ e: Expression, breath: Double, extraTilt: Double, k: Double) {
             left = Eye.lerp(left, e.left, k); right = Eye.lerp(right, e.right, k)
             front += (e.front - front) * min(1, k * 0.75)
-            tilt += (e.tilt + extraTilt - tilt) * k
-            sx += (e.sx - sx) * k; sy += (e.sy + breath - sy) * k
+            tilt += (e.tilt + extraTilt - tilt) * k * 0.62
+            sx += (e.sx - sx) * k * 0.72; sy += (e.sy + breath - sy) * k * 0.72
             func on(_ v: Bool) -> Double { v ? 1 : 0 }
             blush += (on(e.blush) * 0.9 - blush) * k
             arc += (on(e.arc) - arc) * min(1, k * 2); rings += (on(e.rings) - rings) * min(1, k * 1.3)
@@ -792,7 +853,7 @@ enum Critter {
             } else { b.vy = 0 }
             b.onGround = b.vy == 0
         } else { b.onGround = false }
-        b.vx *= b.onGround ? 0.965 : 0.996
+        b.vx *= pow(b.onGround ? 0.965 : 0.996, dt * 60)
         if abs(b.vx) < 4 * u { b.vx = 0 }
         // Squash returns through a light spring so a landing wobbles instead of snapping.
         b.squashV += (1 - b.squash) * 0.35; b.squashV *= 0.72; b.squash += b.squashV
@@ -868,6 +929,7 @@ extension Critter {
         var hopNow: Double? = nil  // engine hops this high on this tick
         var aura = false, ghost = 0.0, star = 0.0, box = 0.0, ice = 0.0, melt = 0.0, speedLines = 0.0
         var glass = 0.0, pour = false, water = 0.0, bubbles = false      // flood: water level in radii above the floor
+        var planeDeparting = false
         var plane: Offset? = nil, clouds = false                          // plane position relative to the body, in radii
         var disco = false, notes = false
         var bomb = 0.0, smokeCloud = 0.0, door = 0.0, doorOpen = 0.0   // ninja vanish: bomb falls, cloud bursts, a sliding door lets it back in
@@ -888,7 +950,7 @@ extension Critter {
         var girl = 0.0            // a girl gluu bot (bob wig, red cheeks) standing at the right of the area
         var bag = 0.0             // snack bag on the floor to the right (shrinks as it is eaten)
         var hand = 0, handPhase = 0.0   // 1 = patting the head from above, 2 = scratching under the chin
-        var board = false, kite = 0.0
+        var board = false, boardFlip = 0.0, kite = 0.0
         var dashX = 0.0          // horizontal offset in radii; the painter draws afterimages behind it
         var driveVx: Double? = nil   // when set, the engine pushes the body sideways this many radii per second
         var say: String? = nil
@@ -911,6 +973,7 @@ extension Critter {
     static func sceneFrame(_ s: Scene, t: Double, dt: Double = 1.0 / 60, seed: Int = 0, from: Double = 0.5) -> SceneFrame {
         var f = SceneFrame()
         func at(_ moment: Double) -> Bool { t >= moment && t - dt < moment }
+        func ease(_ value: Double) -> Double { let q = min(1, max(0, value)); return q * q * (3 - 2 * q) }
         switch s {
         case .inflate:
             if t < 2.6 { f.scale = 1 + (t / 2.6) * (t / 2.6) * 1.3; f.mood = t < 1.4 ? .wow : .worried; if at(0.05) { f.say = "…?" }; if at(2.0) { f.say = "!!" } }
@@ -945,9 +1008,9 @@ extension Critter {
             else if t < 5.5 { open = 0 } else if t < 6.0 { open = (t - 5.5) / 0.5 } else if t < 6.9 { open = 1 } else { open = max(0, 1 - (t - 6.9) / 0.5) }
             f.manhole = open
             if t < 0.7 { f.mood = .curious; if at(0.05) { f.say = "…?" } }
-            else if t < 1.3 { f.sink = (t - 0.7) / 0.6; f.mood = .happy; if at(0.7) { f.say = "โดด!" } }
+            else if t < 1.3 { f.sink = pow(min(1, (t - 0.7) / 0.6), 2); f.mood = .happy; if at(0.7) { f.say = "โดด!" } }
             else if t < 6.0 { f.hidden = true }
-            else if t < 6.9 { f.sink = 1 - (t - 6.0) / 0.6; f.mood = .back; if at(6.0) { f.say = "ทาดา~" } }
+            else if t < 6.9 { f.sink = 1 - ease((t - 6.0) / 0.6); f.mood = .back; if at(6.0) { f.say = "ทาดา~" } }
             else { f.mood = .happy }
             if f.sink > 0 && f.sink < 1 { f.hidden = false }
         case .sneeze:
@@ -1055,7 +1118,7 @@ extension Critter {
                 f.lift = 0.9 + climb; f.plane = Offset(x: 0, y: 0.9); f.driveVx = 0.5; f.clouds = t > 2.5
                 f.mood = t < 3.0 ? .happy : .wow; if at(3.0) { f.say = "เมฆ!" }
             }
-            else if t < 8.0 { f.plane = Offset(x: (t - 6.0) * 5, y: 4.1); f.mood = .startled; if at(6.0) { f.hopNow = 140; f.say = "ว้ากกก!" } }
+            else if t < 8.0 { f.planeDeparting = true; f.plane = Offset(x: (t - 6.0) * 5, y: 0.9); f.mood = .startled; if at(6.0) { f.hopNow = 140; f.say = "ว้ากกก!" } }
             else if t < 9.5 { f.mood = .dizzy; if at(8.0) { f.say = "@_@" } }
             else { f.mood = .happy; if at(9.5) { f.say = "สนุก!" } }
         case .dance:
@@ -1123,7 +1186,7 @@ extension Critter {
         case .skateboard:
             f.board = true
             if t < 0.6 { f.mood = .happy; if at(0.05) { f.say = "โย่ว~" } }
-            else if t < 5.2 { f.driveVx = 2.6; f.mood = .happy; if t >= 2.4 && t < 3.0 { f.spinDeg = 360 * (t - 2.4) / 0.6 }; if at(2.4) { f.hopNow = 260; f.say = "คิกฟลิป!" } }
+            else if t < 5.2 { f.driveVx = 2.6; f.mood = .happy; if t >= 2.4 && t < 3.0 { f.spinDeg = 360 * ease((t - 2.4) / 0.6); f.boardFlip = (t - 2.4) / 0.6 }; if at(2.4) { f.hopNow = 260; f.say = "คิกฟลิป!" } }
             else { f.mood = .happy }
         case .kite:
             f.kite = t < 1.0 ? 0 : t < 3.0 ? (t - 1.0) / 2.0 : t < 7.0 ? 1 : max(0, 1 - (t - 7.0) / 1.2)
@@ -1146,21 +1209,21 @@ extension Critter {
             else if t < 7.4 { f.forklift = (t - 5.6) / 1.8 * 6; f.roomLift = 1; f.toilet = true; f.driveVx = -3.4; f.mood = .shy; if at(5.6) { f.say = "อ๊ายยย" } }
             else { f.toilet = true; f.mood = .shy; if at(7.4) { f.say = ">///<" } }
         case .pingpong:
-            // On the table out of nowhere; two paddles bat it left and right until it has had enough.
+            // Approach, six ballistic rallies, then a continuous recovery to the centre.
             f.table = t < 7.0
-            if t < 0.6 { f.lift = 0.9; f.mood = .curious; if at(0.05) { f.say = "?" } }
+            if t < 0.6 { f.lift = 0.9 * ease(t / 0.6); f.xFrac = from + (0.1 - from) * ease(t / 0.6); f.mood = .curious; if at(0.05) { f.say = "?" } }
             else if t < 4.8 {
                 // Six slow strokes (0.7 s each) carry it from one end of the table to the other in an arc.
                 let k = Int((t - 0.6) / 0.7), phase = (t - 0.6) - Double(k) * 0.7, q = phase / 0.7
-                f.lift = 0.9 + 0.7 * sin(q * .pi)
+                f.lift = 0.9 + 0.7 * 4 * q * (1 - q)
                 f.xFrac = k % 2 == 0 ? 0.1 + 0.8 * q : 0.9 - 0.8 * q
                 f.paddleL = k % 2 == 0 && phase < 0.2 ? 1 - phase / 0.2 : 0
                 f.paddleR = k % 2 == 1 && phase < 0.2 ? 1 - phase / 0.2 : 0
                 f.mood = k < 3 ? .startled : .dizzy
-                if phase < 1.0 / 60 && k > 0 { f.pop = true }
+                if k > 0 && at(0.6 + Double(k) * 0.7) { f.pop = true }
                 if at(0.6) { f.say = "เอ๊ะ!" }; if at(2.0) { f.say = "โอ๊ย" }; if at(3.4) { f.say = "พอ…" }
             }
-            else if t < 6.4 { f.lift = 0.9; f.xFrac = 0.5; f.mood = .annoyed; if at(4.8) { f.say = "หยุดได้แล้ว!!" } }
+            else if t < 6.4 { let q = min(1, (t - 4.8) / 0.65); f.lift = 0.9 + 0.25 * 4 * q * (1 - q); f.xFrac = 0.1 + 0.4 * ease(q); f.mood = .annoyed; if at(4.8) { f.say = "หยุดได้แล้ว!!" } }
             else { f.mood = .dizzy; if at(6.4) { f.say = "@_@" } }
         case .meadow:
             f.grass = true
@@ -1408,4 +1471,12 @@ extension Critter.Care {
     /// Rock-paper-scissors: 0 rock, 1 paper, 2 scissors. Returns 1 when the user wins, -1 when gluu bot wins, 0 for a draw.
     static func rps(user: Int, bot: Int) -> Int { user == bot ? 0 : (user - bot + 3) % 3 == 1 ? 1 : -1 }
     static let rpsEmoji = ["✊", "✋", "✌️"]
+}
+
+// AppKit screen coordinates (origin at lower left), also supports displays left of the main display.
+extension Critter {
+    static func panelOrigin(_ point: CGPoint, size: CGSize, visible: CGRect) -> CGPoint {
+        CGPoint(x: min(max(visible.minX, point.x), max(visible.minX, visible.maxX - size.width)),
+                y: min(max(visible.minY, point.y), max(visible.minY, visible.maxY - size.height)))
+    }
 }

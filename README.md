@@ -1,5 +1,7 @@
 # gluu bot (เดิมชื่อ Veda) — พิมพ์ด้วยเสียงภาษาไทยบน Mac ทั้งหมดบนเครื่อง
 
+> **ใช้ได้เฉพาะ Mac ชิป Apple Silicon (M1 ขึ้นไป) บน macOS 15 ขึ้นไป** — ไฟล์ `gluu-bot-<เวอร์ชัน>.zip` ใช้บน Windows และ Mac Intel ไม่ได้
+
 Veda คือแอป macOS สำหรับ**พูดแล้วพิมพ์** (ไทย → ข้อความไทย หรือ ไทย → อังกฤษ) และ **Snap Translate** (ลากเลือกข้อความบนจอ → แปล ไทย ↔ อังกฤษ ทันที) ทุกอย่างประมวลผลบนเครื่องด้วย [whisper.cpp](https://github.com/ggerganov/whisper.cpp) และ Apple Translation — **ไม่มีเสียง ข้อความ หรือภาพหน้าจอถูกส่งออกจากเครื่อง**
 
 > gluu bot (formerly Veda) is a local-only Thai dictation and screen-translation app for Apple Silicon Macs. Hold **Fn** to speak, release to type. **⇧⌘3** to select on-screen text and translate TH↔EN. Nothing leaves the machine. English notes are at the bottom.
@@ -26,6 +28,7 @@ Veda คือแอป macOS สำหรับ**พูดแล้วพิม
 |---|---|
 | พูดแล้วพิมพ์ | **กด Fn ค้าง** พูด แล้ว**ปล่อย** — ข้อความจะพิมพ์ลงช่องที่เคอร์เซอร์อยู่ |
 | สลับ ไทย / อังกฤษ ระหว่างพูด | **Fn + Space** — ป้าย TH/EN เด้งขึ้นเหนือตัวละคร |
+| ย้ายตำแหน่ง gluu bot | **กดค้างที่ตัว 0.35 วินาทีแล้วลาก** ไปวางตรงไหนของจอก็ได้ ตำแหน่งถูกจำไว้ |
 | ตัวละครมุมจอ (gluu bot) | อยู่มุมขวาล่าง กลิ้ง เด้ง เปลี่ยนสีหน้าเอง ตา LED หันตามเมาส์ · **คลิกที่ตัว** เปิดตั้งค่า · **ลากบนตัว** = ลูบ · **ดับเบิลคลิก** = เล่นหัว · **คลิกขวา** = ให้อาหาร/อ่านหนังสือ/เล่น · **Fn + Option** วนโหมดความขี้เล่น · เลือก "แถบดำแบบเดิม" ได้ในตั้งค่า |
 | เพื่อน gluu bot | หน้าตั้งค่า "เพื่อน gluu bot": ความสนิท 5 ระดับ อิ่ม/สนุก/พลัง/ความรู้ ฉากพิเศษ 30 แบบ (ลูกโป่ง ฟ้าผ่า ฝน น้ำท่วม เครื่องบิน นินจา …) มุกการ์ตูน อากาศสุ่ม หลับเมื่อปล่อยเครื่องแล้วมีนกมาเกาะ · ไม่มีวันตาย |
 | ยกเลิกที่กำลังพูด | **Esc** |
@@ -53,7 +56,7 @@ Veda คือแอป macOS สำหรับ**พูดแล้วพิม
 
 ## Build จากซอร์ส
 ```bash
-bash outputs/Veda/scripts/test.sh    # 293 checks
+bash outputs/Veda/scripts/test.sh    # 346 checks
 bash outputs/Veda/scripts/build.sh   # -> outputs/Veda/Veda.zip
 ```
 ต้องมี Xcode Command Line Tools · whisper-server และโมเดล small อยู่ใน `outputs/Veda/runtime/` (ดู `outputs/Veda/runtime/WHISPER-LICENSE`) · บันทึกการทดสอบและการตัดสินใจทั้งหมดอยู่ใน `outputs/Veda/VALIDATION.md`

@@ -1181,7 +1181,7 @@ struct Settings: View {
                         }
                         card("ดูแล gluu bot") {
                             CritterPreviewCard(model: model, showsCare: true)
-                            Text("ที่ตัวละครมุมจอ: คลิก = เมนู (เมนู / ให้อาหาร / เล่นด้วย) · ดับเบิลคลิก = เล่นด้วย (ลูบหัว เกาคาง เล่นหัว เป่ายิ้งฉุบ) · ลากบนตัว = ลูบ · คลิกขวา = เมนูเต็ม · เล่นหัวถี่เกิน 4 ครั้งใน 20 วิ จะโดนงอน").font(.caption).foregroundStyle(.secondary)
+                            Text("ที่ตัวละครมุมจอ: คลิก = เมนู (เมนู / ให้อาหาร / เล่นด้วย) · ดับเบิลคลิก = เล่นด้วย (ลูบหัว เกาคาง เล่นหัว เป่ายิ้งฉุบ) · ลากทันที = ลูบ · กดค้าง 0.35 วินาทีแล้วลาก = ย้ายตำแหน่งบนจอ · คลิกขวา = เมนูเต็ม · เล่นหัวถี่เกิน 4 ครั้งใน 20 วิ จะโดนงอน").font(.caption).foregroundStyle(.secondary)
                             Text("การพิมพ์ด้วยเสียงทุกครั้งนับเป็นการใช้เวลาด้วยกัน (+ความสนิทเล็กน้อย สูงสุดวันละ 6) · ให้อาหาร \(c.totalFeeds) · อ่าน \(c.totalReads) · เล่น \(c.totalPlays) · ลูบ \(c.totalStrokes) · พิมพ์ด้วยกัน \(c.totalDictations) ครั้ง").font(.caption2).foregroundStyle(.secondary)
                         }
                         card("อารมณ์ขันและอากาศ") {
@@ -1653,7 +1653,11 @@ if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--probe-scen
     for _ in 0..<15 { RunLoop.main.run(until: Date().addingTimeInterval(0.2)); xs.append(Int(e.body.x)) }
     print("\(sc.rawValue) x every 0.2 s:", xs); exit(0)
 }
-if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--render-overlays" {
+if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--render-scene-motion" {
+    try OverlaySnapshots.renderSceneMotion(to: CommandLine.arguments[2])
+} else if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--render-acting" {
+    try OverlaySnapshots.renderActing(to: CommandLine.arguments[2])
+} else if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--render-overlays" {
     try OverlaySnapshots.render(to: CommandLine.arguments[2])
 } else if CommandLine.arguments.count == 2 && CommandLine.arguments[1] == "--probe-focus" {
     // Give the user three seconds to click into the field under test, then describe it.

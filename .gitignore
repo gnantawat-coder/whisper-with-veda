@@ -9,3 +9,5 @@ outputs/Veda/runtime/whisper-server
 # Personal files that landed at the repo root
 *.pdf
 AGENTS.md
+# Separate 3D review deliverable (Blender/GLB); the app does not load it
+outputs/Veda/Graphics3D/

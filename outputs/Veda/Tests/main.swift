@@ -498,3 +498,56 @@ do {
     check(d.trigger(.custom, down: true) == .begin && d.trigger(.custom, down: true) == nil && d.trigger(.custom, down: false) == .end, "the custom key behaves like Fn: begin on press, ignore repeats, end on release")
 }
 print("Care/weather checks passed; total \(checks)")
+do {
+    check(Critter.blinkClosure(elapsed: 0, duration: 0.2) == 0 && Critter.blinkClosure(elapsed: 0.2, duration: 0.2) == 0, "blink begins and finishes fully open")
+    check(Critter.blinkClosure(elapsed: 0.08, duration: 0.2) == 1 && Critter.blinkClosure(elapsed: 0.1, duration: 0) == 0, "blink holds closed and handles a zero duration")
+    check(Critter.blinkClosure(elapsed: 0.03, duration: 0.2) > 0 && Critter.blinkClosure(elapsed: 0.03, duration: 0.2) < 1, "blink has intermediate closure rather than a binary switch")
+    for mood in Critter.Mood.allCases {
+        let still = Critter.acting(mood, age: 0.2, still: true)
+        check(still.sx == 1 && still.sy == 1 && still.tilt == 0 && still.eyeScale == 1 && still.gazeX == 0 && still.gazeY == 0, "reduced motion suppresses acting for \(mood)")
+        for age in stride(from: 0.0, through: 4.0, by: 0.05) {
+            let pose = Critter.acting(mood, age: age)
+            precondition([pose.sx, pose.sy, pose.tilt, pose.eyeScale, pose.gazeX, pose.gazeY].allSatisfy { $0.isFinite })
+            precondition(pose.sx > 0.9 && pose.sx < 1.1 && pose.sy > 0.9 && pose.sy < 1.1 && pose.eyeScale >= 1 && pose.eyeScale < 1.2)
+        }
+    }
+    check(Critter.acting(.happy, age: 0.08).sy < 1 && Critter.acting(.happy, age: 0.3).sy > 1 && Critter.acting(.happy, age: 3).sy == 1, "happy prepares, releases, then settles without moving the ground contact")
+    check(Critter.acting(.curious, age: 0.1).gazeY < 0 && Critter.acting(.curious, age: 0.1).tilt == 0 && Critter.acting(.curious, age: 0.4).tilt < 0, "curious eyes lead the body tilt")
+    let a = Critter.expressions[.annoyed]!, b = Critter.expressions[.sad]!
+    check(a.left.lidSlope > 0 && a.right.lidSlope < 0 && b.left.lidSlope < 0 && b.right.lidSlope > 0, "angry and sad eye silhouettes have opposite inner corners")
+    let eye = Critter.Eye.lerp(a.left, b.left, 0.5)
+    check(eye.lid > 0 && eye.lidSlope < a.left.lidSlope && eye.lidSlope > b.left.lidSlope, "lids blend continuously between expressions")
+}
+print("Expression and acting checks passed; total \(checks)")
+
+// Scene continuity regressions: sample both sides of transitions, not just hero poses.
+do {
+    let pp = { (t: Double) in Critter.sceneFrame(.pingpong, t: t) }
+    for boundary in [0.6, 1.3, 2.0, 2.7, 3.4, 4.1, 4.8] {
+        check(abs(pp(boundary - 0.0001).xFrac! - pp(boundary + 0.0001).xFrac!) < 0.001, "rally position stays continuous at \(boundary)")
+    }
+    check(Critter.sceneFrame(.pingpong, t: 0, from: 0.73).xFrac == 0.73, "rally begins at actual position")
+    check(Critter.sceneFrame(.pingpong, t: 1.325, dt: 1.0 / 30).pop, "30fps cannot skip a paddle impact")
+    check((0...900).allSatisfy { let f = Critter.sceneFrame(.manhole, t: Double($0)/100); return f.sink >= 0 && f.sink <= 1 }, "manhole never lifts through negative sink")
+    check(!Critter.sceneFrame(.plane, t: 5.99).planeDeparting && Critter.sceneFrame(.plane, t: 6.01).planeDeparting, "plane detaches into world coordinates on departure")
+    check(abs(Critter.sceneFrame(.skateboard, t: 2.7).boardFlip - 0.5) < 0.001, "deck flips with the kickflip")
+}
+print("Scene continuity checks passed; total \(checks)")
+do {
+    let area = Critter.Area(width: 10000, height: 200)
+    func velocity(fps: Int) -> Double {
+        var b = Critter.Body(x: 5000, y: 176, radius: 24); b.vx = 300
+        for _ in 0..<fps { _ = Critter.step(&b, in: area, dt: 1.0 / Double(fps), rng: { 0.5 }) }
+        return b.vx
+    }
+    check(abs(velocity(fps: 30) - velocity(fps: 60)) < 0.001 && abs(velocity(fps: 120) - velocity(fps: 60)) < 0.001, "rolling friction retains the same velocity after one second at 30/60/120fps")
+}
+print("Motion timing checks passed; total \(checks)")
+do {
+    let size = CGSize(width: 300, height: 246), screen = CGRect(x: -1920, y: 40, width: 1920, height: 1040)
+    check(Critter.panelOrigin(CGPoint(x: -2500, y: -100), size: size, visible: screen) == CGPoint(x: -1920, y: 40), "drag clamps to lower left of a secondary monitor")
+    check(Critter.panelOrigin(CGPoint(x: 500, y: 2000), size: size, visible: screen) == CGPoint(x: -300, y: 834), "drag clamps to upper right above Dock and below menu bar")
+    check(Critter.panelOrigin(CGPoint(x: -1000, y: 300), size: size, visible: screen) == CGPoint(x: -1000, y: 300), "free placement inside a display is preserved")
+    check(Critter.panelOrigin(.zero, size: size, visible: CGRect(x: 20, y: 30, width: 100, height: 100)) == CGPoint(x: 20, y: 30), "small display cannot produce inverted bounds")
+}
+print("Desktop placement checks passed; total \(checks)")
