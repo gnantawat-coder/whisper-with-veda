@@ -1,0 +1,159 @@
+name: windows-lite
+
+# Builds gluu bot for Windows (lite) and runs the checks that need a real Windows machine:
+# the whisper engine end to end, Unicode typing into a text box, and the keyboard hook.
+on:
+  push:
+    paths: ['windows/**', '.github/workflows/windows.yml']
+  workflow_dispatch:
+    inputs:
+      nvidia:
+        description: Also package the NVIDIA (CUDA 11.8) engine — cannot be run on the build machine
+        type: boolean
+        default: false
+      bench:
+        description: Time the three models on the build machine's CPU
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  VERSION: '0.1.0'
+  WHISPER_TAG: v1.9.2
+  WHISPER_CPU_SHA: 49dcc16de826f20bd53d44f947a1ae49dfa81f86cad67a64d80820cb192d674a
+  WHISPER_CUDA_SHA: 1776668730f5594a0b15f930225779e863dd8280397f9ee7c6e47ccf82bbb203
+  HF: https://huggingface.co/ggerganov/whisper.cpp/resolve/main
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Core tests
+        run: dotnet run --project windows/GluuBot.Tests -c Release
+
+      - name: Publish app (self-contained single file)
+        run: >
+          dotnet publish windows/GluuBot -c Release -r win-x64 --self-contained true
+          -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true
+          -p:DebugType=none -o dist/app
+
+      - name: Helper functions
+        run: |
+          @'
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          function Get-Verified([string]$Url, [string]$Sha, [string]$Out) {
+            Invoke-WebRequest -Uri $Url -OutFile $Out
+            $actual = (Get-FileHash $Out -Algorithm SHA256).Hash.ToLower()
+            if ($actual -ne $Sha) { throw "checksum mismatch for $Out : $actual" }
+          }
+          function New-Package([string]$EngineZip, [string]$Name) {
+            $unpacked = "unpacked-$Name"
+            Expand-Archive $EngineZip -DestinationPath $unpacked
+            $server = Get-ChildItem $unpacked -Recurse -Filter whisper-server.exe | Select-Object -First 1
+            if (-not $server) { throw "whisper-server.exe is not in $EngineZip" }
+            $root = "dist/$Name"
+            New-Item -ItemType Directory -Force "$root/engine" | Out-Null
+            Copy-Item $server.FullName "$root/engine/"
+            Get-ChildItem $server.DirectoryName -Filter *.dll | Copy-Item -Destination "$root/engine/"
+            Copy-Item dist/app/GluuBot.exe "$root/"
+            Copy-Item outputs/Veda/runtime/test-jfk.wav "$root/"
+            Copy-Item outputs/Veda/runtime/WHISPER-LICENSE "$root/engine/WHISPER-LICENSE.txt"
+            Copy-Item windows/README.md "$root/README-TH.txt"
+            Get-ChildItem $root -Recurse -File | ForEach-Object { Write-Host ('{0,12:N0}  {1}' -f $_.Length, $_.FullName.Substring((Resolve-Path $root).Path.Length + 1)) }
+          }
+          function Invoke-EngineTest([string]$Package, [string]$Model, [string]$Label) {
+            $out = Join-Path $env:RUNNER_TEMP "engine-$Label.txt"
+            $wav = (Resolve-Path "$Package/test-jfk.wav").Path
+            $p = Start-Process -FilePath (Resolve-Path "$Package/GluuBot.exe").Path -ArgumentList '--selftest-engine', $Model, $wav, $out -Wait -PassThru
+            Write-Host "== $Label (exit $($p.ExitCode))"
+            if (Test-Path $out) { Get-Content $out -Encoding utf8 | ForEach-Object { Write-Host $_ } }
+            return $p.ExitCode
+          }
+          '@ | Set-Content helpers.ps1 -Encoding utf8
+
+      - name: Fetch the whisper.cpp engine (pinned release, checksum verified) and assemble the CPU package
+        run: |
+          . ./helpers.ps1
+          Get-Verified "https://github.com/ggml-org/whisper.cpp/releases/download/$env:WHISPER_TAG/whisper-bin-x64.zip" $env:WHISPER_CPU_SHA engine-cpu.zip
+          New-Package engine-cpu.zip gluu-bot-windows
+
+      - name: Machine
+        run: |
+          Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors | Format-List
+          (Get-CimInstance Win32_OperatingSystem).Caption
+
+      - name: Self-test — engine end to end (start server, transcribe the sample, timings)
+        run: |
+          . ./helpers.ps1
+          $model = Join-Path $env:RUNNER_TEMP ggml-tiny.bin
+          Get-Verified "$env:HF/ggml-tiny.bin" 'be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21' $model
+          $code = Invoke-EngineTest dist/gluu-bot-windows $model tiny
+          if ($code -ne 0) { throw "engine self-test failed with exit code $code" }
+
+      - name: Self-test — typing Thai with SendInput and the keyboard hook
+        id: ui
+        continue-on-error: true
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP ui.txt
+          $p = Start-Process -FilePath (Resolve-Path dist/gluu-bot-windows/GluuBot.exe).Path -ArgumentList '--selftest-ui', $out -Wait -PassThru
+          if (Test-Path $out) { Get-Content $out -Encoding utf8 }
+          if ($p.ExitCode -ne 0) { throw "UI self-test failed with exit code $($p.ExitCode)" }
+
+      - name: UI self-test verdict
+        run: |
+          Write-Host "UI self-test outcome = ${{ steps.ui.outcome }}"
+
+      - name: Zip the CPU package
+        run: Compress-Archive -Path dist/gluu-bot-windows -DestinationPath "gluu-bot-windows-lite-$env:VERSION-cpu.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gluu-bot-windows-lite-cpu
+          path: gluu-bot-windows-lite-*-cpu.zip
+          if-no-files-found: error
+
+      - name: NVIDIA package (not runnable here — no GPU on the build machine)
+        if: ${{ inputs.nvidia }}
+        run: |
+          . ./helpers.ps1
+          Get-Verified "https://github.com/ggml-org/whisper.cpp/releases/download/$env:WHISPER_TAG/whisper-cublas-11.8.0-bin-x64.zip" $env:WHISPER_CUDA_SHA engine-cuda.zip
+          New-Package engine-cuda.zip gluu-bot-windows-nvidia
+          Rename-Item dist/gluu-bot-windows dist/gluu-bot-windows-cpu
+          Rename-Item dist/gluu-bot-windows-nvidia dist/gluu-bot-windows
+          Compress-Archive -Path dist/gluu-bot-windows -DestinationPath "gluu-bot-windows-lite-$env:VERSION-nvidia.zip"
+          Rename-Item dist/gluu-bot-windows dist/gluu-bot-windows-nvidia
+          Rename-Item dist/gluu-bot-windows-cpu dist/gluu-bot-windows
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.nvidia }}
+        with:
+          name: gluu-bot-windows-lite-nvidia
+          path: gluu-bot-windows-lite-*-nvidia.zip
+          if-no-files-found: error
+
+      - name: Benchmark the three models on this CPU (11 s English sample)
+        if: ${{ inputs.bench }}
+        run: |
+          . ./helpers.ps1
+          $models = @(
+            @{ id = 'small-q5_1';    file = 'ggml-small-q5_1.bin';    sha = 'ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb' },
+            @{ id = 'medium-q5_0';   file = 'ggml-medium-q5_0.bin';   sha = '19fea4b380c3a618ec4723c3eef2eb785ffba0d0538cf43f8f235e7b3b34220f' },
+            @{ id = 'large-v3-q5_0'; file = 'ggml-large-v3-q5_0.bin'; sha = 'd75795ecff3f83b5faa89d1900604ad8c780abd5739fae406de19f23ecd98ad1' }
+          )
+          foreach ($m in $models) {
+            $path = Join-Path $env:RUNNER_TEMP $m.file
+            Get-Verified "$env:HF/$($m.file)" $m.sha $path
+            Invoke-EngineTest dist/gluu-bot-windows $path $m.id | Out-Null
+            Remove-Item $path
+          }
