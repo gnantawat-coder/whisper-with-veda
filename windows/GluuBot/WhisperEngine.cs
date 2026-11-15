@@ -20,7 +20,7 @@ public sealed class WhisperEngine : IDisposable
     public bool IsRunning { get { try { return process is { HasExited: false }; } catch { return false; } } }
     public string ServerPath => Path.Combine(engineDir, "whisper-server.exe");
     /// The NVIDIA package ships cuBLAS next to the server; the CPU package does not.
-    public bool HasGpuBuild { get { try { return Directory.Exists(engineDir) && Directory.EnumerateFiles(engineDir, "cublas*.dll").Any(); } catch { return false; } } }
+    public bool HasGpuBuild { get { try { return Directory.Exists(engineDir) && (File.Exists(Path.Combine(engineDir, "ggml-cuda.dll")) || Directory.EnumerateFiles(engineDir, "cublas*.dll").Any()); } catch { return false; } } }
 
     public async Task StartAsync(string modelPath, CancellationToken ct = default)
     {

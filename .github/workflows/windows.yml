@@ -57,12 +57,12 @@ jobs:
             $actual = (Get-FileHash $Out -Algorithm SHA256).Hash.ToLower()
             if ($actual -ne $Sha) { throw "checksum mismatch for $Out : $actual" }
           }
-          function New-Package([string]$EngineZip, [string]$Name) {
-            $unpacked = "unpacked-$Name"
+          function New-Package([string]$EngineZip, [string]$Root) {
+            $unpacked = 'unpacked-' + [IO.Path]::GetFileNameWithoutExtension($EngineZip)
             Expand-Archive $EngineZip -DestinationPath $unpacked
             $server = Get-ChildItem $unpacked -Recurse -Filter whisper-server.exe | Select-Object -First 1
             if (-not $server) { throw "whisper-server.exe is not in $EngineZip" }
-            $root = "dist/$Name"
+            $root = $Root
             New-Item -ItemType Directory -Force "$root/engine" | Out-Null
             Copy-Item $server.FullName "$root/engine/"
             Get-ChildItem $server.DirectoryName -Filter *.dll | Copy-Item -Destination "$root/engine/"
@@ -86,7 +86,7 @@ jobs:
         run: |
           . ./helpers.ps1
           Get-Verified "https://github.com/ggml-org/whisper.cpp/releases/download/$env:WHISPER_TAG/whisper-bin-x64.zip" $env:WHISPER_CPU_SHA engine-cpu.zip
-          New-Package engine-cpu.zip gluu-bot-windows
+          New-Package engine-cpu.zip dist/gluu-bot-windows
 
       - name: Machine
         run: |
@@ -123,25 +123,6 @@ jobs:
           path: gluu-bot-windows-lite-*-cpu.zip
           if-no-files-found: error
 
-      - name: NVIDIA package (not runnable here — no GPU on the build machine)
-        if: ${{ inputs.nvidia }}
-        run: |
-          . ./helpers.ps1
-          Get-Verified "https://github.com/ggml-org/whisper.cpp/releases/download/$env:WHISPER_TAG/whisper-cublas-11.8.0-bin-x64.zip" $env:WHISPER_CUDA_SHA engine-cuda.zip
-          New-Package engine-cuda.zip gluu-bot-windows-nvidia
-          Rename-Item dist/gluu-bot-windows dist/gluu-bot-windows-cpu
-          Rename-Item dist/gluu-bot-windows-nvidia dist/gluu-bot-windows
-          Compress-Archive -Path dist/gluu-bot-windows -DestinationPath "gluu-bot-windows-lite-$env:VERSION-nvidia.zip"
-          Rename-Item dist/gluu-bot-windows dist/gluu-bot-windows-nvidia
-          Rename-Item dist/gluu-bot-windows-cpu dist/gluu-bot-windows
-
-      - uses: actions/upload-artifact@v4
-        if: ${{ inputs.nvidia }}
-        with:
-          name: gluu-bot-windows-lite-nvidia
-          path: gluu-bot-windows-lite-*-nvidia.zip
-          if-no-files-found: error
-
       - name: Benchmark the three models on this CPU (11 s English sample)
         if: ${{ inputs.bench }}
         run: |
@@ -157,3 +138,18 @@ jobs:
             Invoke-EngineTest dist/gluu-bot-windows $path $m.id | Out-Null
             Remove-Item $path
           }
+
+      - name: NVIDIA package (not runnable here — no GPU on the build machine)
+        if: ${{ inputs.nvidia }}
+        run: |
+          . ./helpers.ps1
+          Get-Verified "https://github.com/ggml-org/whisper.cpp/releases/download/$env:WHISPER_TAG/whisper-cublas-11.8.0-bin-x64.zip" $env:WHISPER_CUDA_SHA engine-cuda.zip
+          New-Package engine-cuda.zip dist/nvidia/gluu-bot-windows
+          Compress-Archive -Path dist/nvidia/gluu-bot-windows -DestinationPath "gluu-bot-windows-lite-$env:VERSION-nvidia.zip"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.nvidia }}
+        with:
+          name: gluu-bot-windows-lite-nvidia
+          path: gluu-bot-windows-lite-*-nvidia.zip
+          if-no-files-found: error
