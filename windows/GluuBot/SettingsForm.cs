@@ -94,7 +94,7 @@ public sealed class SettingsForm : Form
         thRadio.Checked = app.Settings.Mode == "TH"; enRadio.Checked = app.Settings.Mode == "EN";
         if (modelBox.SelectedIndex < 0)
         {
-            var current = app.InstalledModel() ?? ModelCatalog.Find(app.Settings.Model) ?? ModelCatalog.All[app.Engine.HasGpuBuild ? 0 : 1];
+            var current = app.InstalledModel() ?? ModelCatalog.Find(app.Settings.Model) ?? ModelCatalog.All[app.Engine.HasGpuBuild ? 0 : 2];   // without a GPU the accurate model takes ~4x the audio length on a 2-core CPU
             modelBox.SelectedIndex = Array.IndexOf(ModelCatalog.All, current);
         }
         if (micBox.SelectedIndex < 0 && micBox.Items.Count > 0) micBox.SelectedIndex = Math.Clamp(app.Settings.MicDevice + 1, 0, micBox.Items.Count - 1);

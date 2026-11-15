@@ -1,6 +1,8 @@
 # gluu bot (เดิมชื่อ Veda) — พิมพ์ด้วยเสียงภาษาไทยบน Mac ทั้งหมดบนเครื่อง
 
 > **ใช้ได้เฉพาะ Mac ชิป Apple Silicon (M1 ขึ้นไป) บน macOS 15 ขึ้นไป** — ไฟล์ `gluu-bot-<เวอร์ชัน>.zip` ใช้บน Windows และ Mac Intel ไม่ได้
+>
+> **Windows**: มีรุ่นเล็กแบบทดลอง (พูดแล้วพิมพ์อย่างเดียว ยังไม่มีตัวละครและ Snap Translate) ดูวิธีติดตั้งที่ [windows/README.md](windows/README.md) และดาวน์โหลดจากหน้า Releases ที่ชื่อขึ้นต้นด้วย "gluu bot for Windows"
 
 Veda คือแอป macOS สำหรับ**พูดแล้วพิมพ์** (ไทย → ข้อความไทย หรือ ไทย → อังกฤษ) และ **Snap Translate** (ลากเลือกข้อความบนจอ → แปล ไทย ↔ อังกฤษ ทันที) ทุกอย่างประมวลผลบนเครื่องด้วย [whisper.cpp](https://github.com/ggerganov/whisper.cpp) และ Apple Translation — **ไม่มีเสียง ข้อความ หรือภาพหน้าจอถูกส่งออกจากเครื่อง**
 
