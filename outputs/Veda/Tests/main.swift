@@ -493,6 +493,18 @@ do {
     check(k.isModifier && k.label == "⌥ ขวา" && k.modifierMask == 1 << 19 && TalkKey(stored: k.stored) == k, "a modifier talk key knows its flag and round-trips")
     check(!TalkKey(keyCode: 105).isModifier && TalkKey(keyCode: 105).label == "F13" && TalkKey(keyCode: 105).modifierMask == nil, "F13 is a plain key")
     check(!TalkKey.allowed(63) && !TalkKey.allowed(49) && !TalkKey.allowed(53) && !TalkKey.allowed(57) && TalkKey.allowed(61) && TalkKey.allowed(79), "Fn, Space, Esc and caps lock cannot be the talk key")
+    check(!TalkKey.allowed(0) && !TalkKey.allowed(18) && !TalkKey.allowed(36) && !TalkKey.allowed(48) && !TalkKey.allowed(51) && !TalkKey.allowed(123) && TalkKey.allowed(105) && TalkKey.allowed(54) && TalkKey.allowed(119), "typing keys (letters, digits, Return, Tab, Delete, arrows) are refused; modifiers, F-keys and End are fine")
+    typealias Cap = TalkKeyCapture
+    check(Cap.decide(keyDown: true, flagsChanged: false, keyCode: 105, flags: 0, isRepeat: false) == .set(TalkKey(keyCode: 105)), "F13 pressed while choosing becomes the talk key")
+    check(Cap.decide(keyDown: true, flagsChanged: false, keyCode: 79, flags: 0, isRepeat: false) == .set(TalkKey(keyCode: 79)), "F18 can be chosen too (the tap normally consumes it)")
+    check(Cap.decide(keyDown: true, flagsChanged: false, keyCode: 105, flags: 0, isRepeat: true) == .ignore, "auto-repeat is ignored")
+    check(Cap.decide(keyDown: true, flagsChanged: false, keyCode: 53, flags: 0, isRepeat: false) == .cancel, "Esc cancels")
+    if case .refused(let why) = Cap.decide(keyDown: true, flagsChanged: false, keyCode: 0, flags: 0, isRepeat: false) { check(why.contains("พิมพ์"), "a letter is refused with a reason") } else { check(false, "a letter is refused with a reason") }
+    check(Cap.decide(keyDown: false, flagsChanged: true, keyCode: 61, flags: 1 << 19, isRepeat: false) == .set(TalkKey(keyCode: 61)), "right Option is taken on the press")
+    check(Cap.decide(keyDown: false, flagsChanged: true, keyCode: 61, flags: 0, isRepeat: false) == .ignore, "and its release means nothing")
+    check(Cap.decide(keyDown: false, flagsChanged: true, keyCode: 54, flags: 1 << 20, isRepeat: false) == .set(TalkKey(keyCode: 54)) && Cap.decide(keyDown: false, flagsChanged: true, keyCode: 62, flags: 1 << 18, isRepeat: false) == .set(TalkKey(keyCode: 62)), "right Command and right Control work the same way")
+    if case .refused = Cap.decide(keyDown: false, flagsChanged: true, keyCode: 63, flags: 1 << 23, isRepeat: false) { check(true, "Fn is refused: it already talks") } else { check(false, "Fn is refused: it already talks") }
+    check(Cap.decide(keyDown: false, flagsChanged: true, keyCode: 63, flags: 0, isRepeat: false) == .ignore && Cap.decide(keyDown: false, flagsChanged: false, keyCode: 105, flags: 0, isRepeat: false) == .ignore, "Fn release and key-up are ignored")
     check(TalkKey(stored: "x") == nil && TalkKey(stored: "-1") == nil, "bad stored values are rejected")
     var d = DictationShortcut()
     check(d.trigger(.custom, down: true) == .begin && d.trigger(.custom, down: true) == nil && d.trigger(.custom, down: false) == .end, "the custom key behaves like Fn: begin on press, ignore repeats, end on release")
@@ -551,3 +563,33 @@ do {
     check(Critter.panelOrigin(.zero, size: size, visible: CGRect(x: 20, y: 30, width: 100, height: 100)) == CGPoint(x: 20, y: 30), "small display cannot produce inverted bounds")
 }
 print("Desktop placement checks passed; total \(checks)")
+do {
+    // Cosplay voice: the costume changes the words, never the app's own messages.
+    let bee = Critter.Costume.bee, plain = Critter.Costume.none
+    check(Critter.Costume(rawValue: "bee") == .bee && Critter.Costume(rawValue: "none") == Critter.Costume.none && Critter.Costume(rawValue: "") == nil, "costume restores from its saved raw value")
+    check(Critter.Mood.allCases.allSatisfy { plain.says($0) == nil }, "no costume keeps the usual mood lines")
+    check(Critter.Mood.allCases.allSatisfy { m in Critter.expressions[m]!.says.isEmpty || !(bee.says(m) ?? []).isEmpty }, "bee has its own line for every mood that speaks")
+    check(bee.says(.normal) == nil && bee.says(.listening) == nil, "bee stays silent where the character is silent")
+    check([0.0, 0.3, 0.6, 0.9].allSatisfy { plain.restyle("ฟ้าสวย…", kind: .scene, roll: $0) == "ฟ้าสวย…" }, "no costume never rewrites a line")
+    for kind in [Critter.BubbleKind.notice, .playfulness, .language, .listening] {
+        check(bee.restyle("ข้อความยังไม่ได้พิมพ์", kind: kind, roll: 0.5) == "ข้อความยังไม่ได้พิมพ์", "bee leaves functional text plain: \(kind)")
+    }
+    let styled = [0.0, 0.3, 0.6, 0.9].map { bee.restyle("ฟ้าสวย…", kind: .scene, roll: $0) }
+    check(Set(styled).count == 4 && styled.allSatisfy { $0.contains("ฟ้าสวย…") && ($0.contains("📻") || $0.contains("ปิ๊บ")) }, "bee restyles scene lines in four radio variants and keeps the words")
+    check(styled.allSatisfy { bee.restyle($0, kind: .care, roll: 0.1) == $0 }, "restyling is idempotent (no double radio prefix)")
+    check(bee.restyle("!!", kind: .scene, roll: 0.5) == "ปิ๊บ!!" && bee.restyle(" ", kind: .care, roll: 0.5) == " ", "short exclamations get a beep, empty stays empty")
+    check(!bee.putOn.isEmpty && !bee.takeOff.isEmpty && plain.putOn.isEmpty, "putting on and taking off the bee is announced")
+}
+print("Costume voice checks passed; total \(checks)")
+do {
+    let prime = Critter.Costume.prime
+    check(Critter.Costume.allCases == [.none, .bee, .prime] && Critter.Costume(rawValue: "prime") == .prime, "three costumes in menu order; prime restores from its raw value")
+    check(Critter.Mood.allCases.allSatisfy { m in Critter.expressions[m]!.says.isEmpty || !(prime.says(m) ?? []).isEmpty }, "prime has its own line for every mood that speaks")
+    check(Critter.Mood.allCases.allSatisfy { m in (prime.says(m) ?? []).allSatisfy { !(Critter.Costume.bee.says(m) ?? []).contains($0) } }, "prime and bee never share a line")
+    let styled = [0.0, 0.3, 0.6, 0.9].map { prime.restyle("ฟ้าสวย…", kind: .care, roll: $0) }
+    check(Set(styled).count == 4 && styled.allSatisfy { $0.contains("ฟ้าสวย…") && !$0.contains("📻") }, "prime restyles in its own four variants without the radio")
+    check(styled.allSatisfy { prime.restyle($0, kind: .scene, roll: 0.5) == $0 }, "prime restyling is idempotent")
+    check(prime.restyle("ข้อความยังไม่ได้พิมพ์", kind: .notice, roll: 0.5) == "ข้อความยังไม่ได้พิมพ์", "prime leaves notices plain")
+    check(Critter.Costume.allCases.allSatisfy { !$0.short.isEmpty && $0.short.count <= 9 }, "menu labels stay short enough for the capsule menu")
+}
+print("Second costume checks passed; total \(checks)")

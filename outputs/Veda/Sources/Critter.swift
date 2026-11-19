@@ -19,6 +19,7 @@ final class CritterEngine: ObservableObject {
         var bird = 0.0, birdLeave = 0.0   // 0 none; bird 0→1 flying in then perched; birdLeave 0→1 flying off
         var anchorX = 0.0                 // panel x where the body stood when the scene pinned its props
         var burstAge = -1.0, popAge = -1.0, dropletAge = -1.0   // seconds since the one-tick effects fired; -1 = never
+        var costume: Critter.Costume = .none, costumeT = 0.0   // head cosplay being drawn; 0 = off (or still above the head), 1 = on
     }
     @Published private(set) var snapshot: Snapshot
     @Published var bubble: String?
@@ -26,13 +27,16 @@ final class CritterEngine: ObservableObject {
     var onReposition: ((Bool) -> Void)?
     var repositioning = false
     var onTap: (() -> Void)?             // "เมนู" in the click menu: opens settings
-    enum Menu { case closed, root, play, rps }
+    enum Menu { case closed, root, play, rps, costume }
     @Published var menu: Menu = .closed
     private var menuOpenedAt = -1.0, pointerOutsideSince = -1.0
-    static let menuSizes: [Menu: CGSize] = [.root: CGSize(width: 214, height: 30), .play: CGSize(width: 300, height: 30), .rps: CGSize(width: 150, height: 30)]
+    var menuMeasured: [Menu: CGSize] = [:]     // real sizes reported by CritterMenuBar
+    static let menuSizes: [Menu: CGSize] = [.root: CGSize(width: 268, height: 30), .play: CGSize(width: 300, height: 30), .rps: CGSize(width: 150, height: 30), .costume: CGSize(width: 290, height: 30)]
     /// Where the click menu sits (panel coordinates): just above the body, kept inside the panel.
     func menuRect() -> CGRect {
-        guard menu != .closed, let size = CritterEngine.menuSizes[menu] else { return .zero }
+        guard menu != .closed, let guess = CritterEngine.menuSizes[menu] else { return .zero }
+        let m = menuMeasured[menu] ?? guess
+        let size = CGSize(width: min(panelSize.width - 4, m.width + 6), height: max(m.height, 26) + 4)   // a little slack around the capsule
         let c = center()
         let x = min(panelSize.width - size.width / 2 - 4, max(size.width / 2 + 4, c.x))
         let y = max(size.height / 2 + 2, c.y - body.drawRadius * 1.25 - 26)
@@ -53,6 +57,35 @@ final class CritterEngine: ObservableObject {
             let o = self.act(.game(result))
             self.say([Critter.Care.rpsEmoji[bot] + " " + (o.say ?? "")], for: 2.6, kind: .care)
         }
+    }
+
+    // MARK: cosplay — head only. The costume sets the drawing and the voice (Critter.Costume); rules stay the same.
+    private(set) var costume: Critter.Costume = .none
+    private var drawnCostume: Critter.Costume = .none, costumeT = 0.0
+    var costumeChanged: ((Critter.Costume) -> Void)?
+    /// Put a costume on (it drops onto the head with a hop) or take it off (it lifts away).
+    /// `announce` false = silent and instant, for restoring the saved choice at launch and for previews.
+    func setCostume(_ c: Critter.Costume, announce: Bool = true) {
+        guard c != costume else { return }
+        let old = costume
+        costume = c
+        if c != .none { drawnCostume = c; if old != .none { costumeT = 0 } }
+        if !announce || reduceMotion {
+            costumeT = c == .none ? 0 : 1
+            if c == .none { drawnCostume = .none }
+        }
+        if announce {
+            if !reduceMotion { Critter.hop(&body, height: 220) }
+            say(c == .none ? old.takeOff : c.putOn, for: 2.4, kind: .playfulness)
+        }
+        publish()
+    }
+    /// From the click menu: wear it here and tell the app, which saves it and dresses the other views.
+    func wear(_ c: Critter.Costume) {
+        closeMenu()
+        // Choosing the one already worn used to do nothing at all, which read as "the button is broken".
+        if c == costume { say([c == .none ? "ไม่ได้ใส่ชุดอยู่นะ" : "ใส่ " + c.short + " อยู่แล้ว"], for: 1.8, kind: .playfulness); return }
+        setCostume(c); costumeChanged?(c)
     }
 
     let area: Critter.Area
@@ -89,6 +122,22 @@ final class CritterEngine: ObservableObject {
     var level = 0.0
     var paused = false                  // offscreen previews only
     var settingsIsFront: () -> Bool = { false }   // asked every tick; a hidden settings window does not count
+    /// Changing the level takes effect now: the pending move, mood and scene are re-timed under the new gaps
+    /// (a scene queued ten minutes out under "quiet" must not survive a switch to "playful"), and a move
+    /// plays at once when the level went up, so the change can be seen.
+    func setPlayfulness(_ level: Int) {
+        let old = scheduler.playfulness
+        scheduler.playfulness = max(0, min(2, level))
+        guard scheduler.playfulness != old else { return }
+        nextMoveAt = clock + scheduler.nextMoveDelay(Double.random(in: 0..<1))
+        nextMoodAt = clock + scheduler.nextMoodDelay(Double.random(in: 0..<1))
+        nextSceneAt = clock + scheduler.nextSceneDelay(Double.random(in: 0..<1))
+        if scheduler.playfulness > old, external == .idle, scene == nil, !reduceMotion, !paused, body.onGround, body.deepClock < 0, mood != .asleep {
+            perform(scheduler.playfulness == 2 ? .pinball : .hop)
+        }
+    }
+    /// What the scheduler has started on its own since launch (probes and tests read this; nothing else does).
+    private(set) var activity = (moves: 0, moods: 0, scenes: 0)
     private(set) var mood: Critter.Mood = .normal
     private var moodEndsAt = 0.0, moodSetAt = 0.0, nextMoveAt = 3.0, nextMoodAt = 5.0, blinkAt = 1.8, blinkUntil = -1.0, blinkDuration = 0.11, saccadeAt = 2.0
     private var expressionSetAt = 0.0
@@ -121,7 +170,7 @@ final class CritterEngine: ObservableObject {
             bubble = nil; bubbleUntil = -1          // only the TH/EN pill, never two boxes stacked
             langLabel = m.rawValue; langUntil = clock + 1.3
             Critter.hop(&body, height: 180); blinkDuration = 0.16; blinkUntil = clock + blinkDuration
-        case .done: external = .done; doneUntil = clock + 1.1; Critter.hop(&body, height: 400); say(Critter.expressions[.done]!.says, for: 1.2, kind: .done); act(.dictation)
+        case .done: external = .done; doneUntil = clock + 1.1; Critter.hop(&body, height: 400); say(Critter.expressions[.done]!.says, for: 1.2, kind: .done, mood: .done); act(.dictation)
         case .held: setMood(.sad, hold: 3.0)
         case .error: setMood(.annoyed, hold: 2.5)
         case .copied: setMood(.happy, hold: 1.6)
@@ -131,7 +180,7 @@ final class CritterEngine: ObservableObject {
     }
     func setExternal(_ e: External) {
         if e == .listening && external != .listening { bubble = nil; bubbleUntil = -1 }
-        if e == .thinking && external != .thinking { say(Critter.expressions[.thinking]!.says, for: 1.4, kind: .thinking) }
+        if e == .thinking && external != .thinking { say(Critter.expressions[.thinking]!.says, for: 1.4, kind: .thinking, mood: .thinking) }
         external = e
     }
     func setMood(_ m: Critter.Mood, hold: Double = 2.6, speak: Bool = true) {
@@ -146,11 +195,16 @@ final class CritterEngine: ObservableObject {
             // Wait for the turn to finish before speaking, or it looks like talking without looking.
             let delay = e.front >= 1 ? 0.26 : 0.06
             let words = e.says
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in guard let self, self.mood == m else { return }; self.say(words, for: e.sticky ? 1e9 : 1.8, kind: .mood) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in guard let self, self.mood == m else { return }; self.say(words, for: e.sticky ? 1e9 : 1.8, kind: .mood, mood: m) }
         }
     }
-    private func say(_ words: [String], for seconds: Double, kind: Critter.BubbleKind) {
-        guard Critter.allowsBubble(kind, quiet: quiet), let w = words.randomElement() else { return }
+    /// Every bubble goes through here, so a costume's voice applies everywhere: its own lines for a mood,
+    /// otherwise the usual words restyled. Notices and mode changes stay plain (Costume.restyle).
+    private func say(_ words: [String], for seconds: Double, kind: Critter.BubbleKind, mood m: Critter.Mood? = nil) {
+        guard Critter.allowsBubble(kind, quiet: quiet) else { return }
+        let w: String
+        if let m, let own = costume.says(m)?.randomElement() { w = own }
+        else { guard let line = words.randomElement() else { return }; w = costume.restyle(line, kind: kind, roll: Double.random(in: 0..<1)) }
         bubble = w; bubbleUntil = clock + seconds
     }
     // MARK: care — the Tamagotchi side. Rules in Critter.Care; this just applies outcomes to the face and body.
@@ -301,20 +355,20 @@ final class CritterEngine: ObservableObject {
         if external == .idle && !still && !paused && !settingsIsFront() && scene == nil {
             if nextSceneAt == 0 { nextSceneAt = clock + scheduler.nextSceneDelay(Double.random(in: 0..<1)) }
             if clock > nextSceneAt && body.onGround && body.deepClock < 0 && deepStartAt < 0 && mood != .asleep && mood != .sleepy {
-                perform(scene: scheduler.pickScene(Double.random(in: 0..<1)))
+                perform(scene: scheduler.pickScene(Double.random(in: 0..<1))); activity.scenes += 1
                 nextSceneAt = clock + scheduler.nextSceneDelay(Double.random(in: 0..<1))
             }
         }
         if external == .idle && !still && !paused && !settingsIsFront() && scene == nil {
             if clock > nextMoodAt && !(Critter.expressions[mood]?.sticky ?? false) && deepStartAt < 0 && body.deepClock < 0 {
                 let m = scheduler.pickMood(Double.random(in: 0..<1))
-                setMood(m, hold: m == .normal ? 0 : 2.4 + Double.random(in: 0..<2.2))
+                setMood(m, hold: m == .normal ? 0 : 2.4 + Double.random(in: 0..<2.2)); if m != .normal { activity.moods += 1 }
                 nextMoodAt = clock + scheduler.nextMoodDelay(Double.random(in: 0..<1))
             }
             if mood != .normal, moodEndsAt > 0, clock > moodEndsAt, !(Critter.expressions[mood]?.sticky ?? false) { setMood(.normal) }
             if mood == .sleepy && clock > moodEndsAt + 6 { setMood(.asleep) }
             if mood != .sleepy && mood != .asleep && clock > nextMoveAt && body.onGround && body.deepClock < 0 && deepStartAt < 0 {
-                perform(scheduler.pickMove(Double.random(in: 0..<1), now: clock))
+                perform(scheduler.pickMove(Double.random(in: 0..<1), now: clock)); activity.moves += 1
                 nextMoveAt = clock + scheduler.nextMoveDelay(Double.random(in: 0..<1))
             }
             if pointerInside && (Critter.expressions[mood]?.sticky ?? false) { setMood(.normal) }
@@ -366,6 +420,9 @@ final class CritterEngine: ObservableObject {
         if external == .listening { face.left.h = 26 + level * 4; face.right.h = 27 + level * 4 }
         if bubble != nil && clock > bubbleUntil { bubble = nil }
         if langLabel != nil && clock > langUntil { langLabel = nil }
+        let costumeGoal = costume == .none ? 0.0 : 1.0
+        if still { costumeT = costumeGoal } else if costumeT < costumeGoal { costumeT = min(1, costumeT + dt / 0.5) } else if costumeT > costumeGoal { costumeT = max(0, costumeT - dt / 0.35) }
+        if costume == .none && costumeT == 0 { drawnCostume = .none }
         publish()
     }
     private func currentExpression() -> Critter.Expression {
@@ -399,7 +456,8 @@ final class CritterEngine: ObservableObject {
                             scene: sceneFrame, sceneKind: scene, area: CGRect(x: inset.width, y: inset.height - body.radius, width: area.width, height: area.height + body.radius), sky: sky, prop: sceneProp, pixelEyes: pixelEyes, mood: mood, external: external,
                             bird: birdArriveAt >= 0 && clock >= birdArriveAt ? min(1, (clock - birdArriveAt) / 1.2) : 0, birdLeave: birdLeaveAt >= 0 ? min(1, (clock - birdLeaveAt) / 1.2) : 0,
                             anchorX: inset.width + (sceneAnchorX ?? body.x),
-                            burstAge: burstAt < 0 ? -1 : clock - burstAt, popAge: popAt < 0 ? -1 : clock - popAt, dropletAge: dropletAt < 0 ? -1 : clock - dropletAt)
+                            burstAge: burstAt < 0 ? -1 : clock - burstAt, popAge: popAt < 0 ? -1 : clock - popAt, dropletAge: dropletAt < 0 ? -1 : clock - dropletAt,
+                            costume: drawnCostume, costumeT: costumeT)
     }
     /// Deterministic review uses the live engine's step, not a separate animation implementation.
     func reviewStep(dt: Double = 1.0 / 30) { tick(dt: dt) }
@@ -411,7 +469,7 @@ final class CritterEngine: ObservableObject {
         setMood(m, hold: 1e9)
         for _ in 0..<steps { tick() }
         moodSetAt = clock - 5; expressionSetAt = clock - 5; publish()
-        bubble = bubbleText ?? Critter.expressions[m]?.says.first
+        bubble = bubbleText ?? costume.says(m)?.first ?? Critter.expressions[m]?.says.first
     }
     /// Offscreen review of a set piece at a given moment; one-tick effects can be pinned to a recent age.
     func settle(scene s: Critter.Scene, t: Double, burst: Bool = false, pop: Bool = false, droplets: Bool = false, bubbleText: String? = nil, seed: Int? = nil) {
@@ -461,7 +519,7 @@ struct CritterView: View {
                     .padding(.horizontal, 10).padding(.vertical, 5)
                     .background(Color.white.opacity(0.96), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Color.black.opacity(0.12), lineWidth: 0.5))
-                    .fixedSize().position(x: s.center.x, y: s.center.y - s.drawRadius * (2 * (s.scene?.scale ?? 1) - 1) * s.face.sy * s.squash - 20 - ((s.scene?.balloon ?? 0) > 0 ? s.drawRadius * 3.7 : 0) - ((s.scene?.umbrella ?? false) || (s.sky.kind == .rain && s.sky.umbrella && s.sceneKind == nil) ? s.drawRadius * 1.9 : 0) - (s.scene?.eyeOut ?? 0) * s.drawRadius * 0.9 - (s.scene?.stretch ?? 0) * s.drawRadius * 1.3 - (s.bird > 0.5 && s.birdLeave == 0 ? s.drawRadius * 0.95 : 0) - (engine.menu == .closed ? 0 : 36) - ((s.scene?.hand ?? 0) == 1 ? s.drawRadius * 1.1 : 0))
+                    .fixedSize().position(x: s.center.x, y: s.center.y - s.drawRadius * (2 * (s.scene?.scale ?? 1) - 1) * s.face.sy * s.squash - 20 - ((s.scene?.balloon ?? 0) > 0 ? s.drawRadius * 3.7 : 0) - ((s.scene?.umbrella ?? false) || (s.sky.kind == .rain && s.sky.umbrella && s.sceneKind == nil) ? s.drawRadius * 1.9 : 0) - (s.scene?.eyeOut ?? 0) * s.drawRadius * 0.9 - (s.scene?.stretch ?? 0) * s.drawRadius * 1.3 - (s.bird > 0.5 && s.birdLeave == 0 ? s.drawRadius * 0.95 : 0) - (engine.menu == .closed ? 0 : 36) - ((s.scene?.hand ?? 0) == 1 ? s.drawRadius * 1.1 : 0) - (s.costume != .none ? s.drawRadius * 0.42 * s.costumeT : 0))
                     .transition(.scale(scale: 0.4).combined(with: .opacity))
             }
             if let lang = engine.langLabel {
@@ -499,34 +557,18 @@ struct CritterView: View {
                     Button("เล่นหัว") { engine.act(.tease) }
                     Button("ลูบหัว") { engine.act(.pat) }
                     Button("เกาคาง") { engine.act(.chin) }
+                    Section("แต่งตัว (คอสเพลย์)") { ForEach(Critter.Costume.allCases, id: \.self) { c in Button((c == engine.costume ? "✓ " : "") + (c == .none ? "ถอดชุด" : c.emoji + " " + c.name)) { engine.wear(c) } } }
                     Divider()
                     Button("ตั้งค่า…") { engine.onTap?() }
                 }
             if engine.menu != .closed {
                 let r = engine.menuRect()
-                HStack(spacing: 3) {
-                    switch engine.menu {
-                    case .root:
-                        Button("เมนู") { engine.closeMenu(); engine.onTap?() }
-                        Button("ให้อาหาร") { engine.closeMenu(); engine.act(.snack) }
-                        Button("เล่นด้วย") { engine.choose(.play) }
-                    case .play:
-                        Button("ลูบหัว") { engine.closeMenu(); engine.act(.pat) }
-                        Button("เกาคาง") { engine.closeMenu(); engine.act(.chin) }
-                        Button("เล่นหัว") { engine.closeMenu(); engine.act(.tease) }
-                        Button("เป่ายิ้งฉุบ") { engine.choose(.rps) }
-                    case .rps:
-                        ForEach(0..<3, id: \.self) { i in Button(Critter.Care.rpsEmoji[i]) { engine.playRPS(user: i) } }
-                    case .closed: EmptyView()
-                    }
-                }
-                .buttonStyle(MenuChip()).font(.system(size: 11, weight: .medium))
-                .padding(.horizontal, 5).padding(.vertical, 3)
-                .background(Color.white.opacity(0.96), in: Capsule())
-                .overlay(Capsule().strokeBorder(Color.black.opacity(0.12), lineWidth: 0.5))
-                .frame(width: r.width, height: r.height)
-                .position(x: r.midX, y: r.midY)
-                .transition(.scale(scale: 0.6).combined(with: .opacity))
+                CritterMenuBar(engine: engine)
+                    // The panel only takes clicks inside menuRect, so the rect must be the bar's real size:
+                    // a hard-coded width cut off the last button ("แต่งตัว" / a costume) and clicks fell through.
+                    .onGeometryChange(for: CGSize.self) { $0.size } action: { engine.menuMeasured[engine.menu] = $0 }
+                    .position(x: r.midX, y: r.midY)
+                    .transition(.scale(scale: 0.6).combined(with: .opacity))
             }
         }
         .frame(width: engine.panelSize.width, height: engine.panelSize.height)
@@ -689,6 +731,8 @@ enum CritterPainter {
         c.translateBy(x: 0, y: -46)
         c.rotate(by: .degrees(f.tilt))
         let bodyPath = Path(ellipseIn: CGRect(x: -46, y: -46, width: 92, height: 92))
+        let wearing = s.costume != .none && s.costumeT > 0.001 && sc.spin < 0.01
+        if wearing { drawCostume(s.costume, layer: .back, front: f.front, amount: s.costumeT, in: &c) }
         if sc.spin > 0.01 {
             // Tasmanian-devil blur: three narrow ghosts of the body, turning.
             for i in 0..<3 {
@@ -700,6 +744,7 @@ enum CritterPainter {
             drawShell(in: &c)
             if sc.glow > 0.01 { c.fill(bodyPath, with: .color(Color(red: 1.0, green: 0.85, blue: 0.3).opacity(sc.glow * 0.95))); c.fill(Path(ellipseIn: CGRect(x: -30, y: -34, width: 22, height: 14)), with: .color(.white.opacity(0.5 * sc.glow))) }
         }
+        if wearing { drawCostume(s.costume, layer: .front, front: f.front, amount: s.costumeT, in: &c) }
         if s.sky.kind == .snow && s.sceneKind == nil { drawSnowCap(amount: min(1, s.sky.age / 90), in: &c) }
         if sc.charred > 0.01 { drawCharred(amount: sc.charred, t: t, still: s.still, in: &c) }
         let an = Critter.anchors(front: f.front)
@@ -716,7 +761,7 @@ enum CritterPainter {
         let pixelMode: PixelMode = !px ? .none : s.external == .listening ? .equalizer(s.level) : (s.external == .thinking || s.mood == .thinking) ? .bands : .plain
         func lit(_ path: Path, alpha: Double, in g: inout GraphicsContext) {
             if px { drawDots(path, alpha: alpha, mode: pixelMode, t: t, age: s.moodAge, still: s.still, in: &g) }
-            else { g.fill(path, with: .color(.white.opacity(alpha))) }
+            else { g.fill(path, with: .color((s.costume != .none && s.costumeT > 0.5 ? beeEye : .white).opacity(alpha))) }
         }
         let eyeGrow = px ? 1.3 : 1.0   // LED eyes read bigger, like Astro's
         if f.arc < 0.99 && sc.hearts < 0.99 {
@@ -774,6 +819,124 @@ enum CritterPainter {
         if sc.newspaper { var np = preSquash; drawNewspaper(t: t, still: s.still, in: &np) }
         if s.bird > 0.001 || s.birdLeave > 0.001 { drawBird(arrive: s.bird, leave: s.birdLeave, t: t, still: s.still, in: &c) }
         if sc.box > 0.01 { drawBox(lowered: sc.box, eyeLevel: (aL.y + aR.y) / 2, in: &c) }
+    }
+
+    // MARK: cosplay (body space, 92-unit body). The back layer sits behind the shell so horn bases and ear discs
+    // tuck behind it; the front layer is clipped to the body and leaves the face opening around the eyes.
+    enum CostumeLayer { case back, front }
+    static let beeYellow = Color(red: 0.99, green: 0.79, blue: 0.13)
+    static let beeYellowDeep = Color(red: 0.85, green: 0.57, blue: 0.04)
+    static let beeBlack = Color(white: 0.12)
+    static let beeEye = Color(red: 0.62, green: 0.90, blue: 1.0)
+    static let primeBlue = Color(red: 0.16, green: 0.37, blue: 0.84)
+    static let primeBlueDeep = Color(red: 0.07, green: 0.18, blue: 0.52)
+    static let silver = Color(red: 0.84, green: 0.86, blue: 0.90)
+    static let silverDeep = Color(red: 0.52, green: 0.56, blue: 0.62)
+    /// The helmet outline shared by every costume: a cap over the brow with a V between the eyes, cheek guards
+    /// down both sides, and an open visor around the eyes. Follows the eye anchors, so it turns with the face.
+    static func visorPath(front fr: Double) -> (path: Path, mx: Double, browMid: Double, rx: Double, ry: Double, lx: Double, ly: Double) {
+        let an = Critter.anchors(front: fr)
+        let lx = an.left.x - 60, ly = an.left.y - 60, rx = an.right.x - 60, ry = an.right.y - 60
+        let mx = (lx + rx) / 2, browL = ly - 21, browR = ry - 21, browMid = (browL + browR) / 2
+        var p = Path()
+        p.move(to: CGPoint(x: -60, y: -70)); p.addLine(to: CGPoint(x: 60, y: -70))
+        p.addLine(to: CGPoint(x: 60, y: ry + 34))
+        p.addQuadCurve(to: CGPoint(x: rx + 19, y: ry + 15), control: CGPoint(x: rx + 22, y: ry + 30))
+        p.addLine(to: CGPoint(x: rx + 16, y: browR + 4))
+        p.addLine(to: CGPoint(x: rx + 11, y: browR))
+        p.addLine(to: CGPoint(x: mx + 5, y: browMid + 2))
+        p.addLine(to: CGPoint(x: mx, y: browMid + 9))
+        p.addLine(to: CGPoint(x: mx - 5, y: browMid + 2))
+        p.addLine(to: CGPoint(x: lx - 11, y: browL))
+        p.addLine(to: CGPoint(x: lx - 16, y: browL + 4))
+        p.addLine(to: CGPoint(x: lx - 19, y: ly + 15))
+        p.addQuadCurve(to: CGPoint(x: -60, y: ly + 34), control: CGPoint(x: lx - 22, y: ly + 30))
+        p.closeSubpath()
+        return (p, mx, browMid, rx, ry, lx, ly)
+    }
+    static func drawCostume(_ costume: Critter.Costume, layer: CostumeLayer, front fr: Double, amount: Double, in base: inout GraphicsContext) {
+        guard costume != .none else { return }
+        let a = max(0, min(1, amount)), ease = 1 - pow(1 - a, 3)
+        var c = base
+        c.translateBy(x: 0, y: -72 * (1 - ease))     // drops onto the head / lifts off
+        c.opacity = min(1, a * 2.5)
+        let v = visorPath(front: fr)
+        let mx = v.mx, u = 1 - fr                    // u: how far the head is turned to the viewer's left
+        switch (costume, layer) {
+        case (.none, _): return
+        case (.bee, .back):
+            // Ear discs: only the outer crescent shows past the shell.
+            for (x, w) in [(-47 + 5 * u, 22 - 8 * u), (47 - 2 * u, 22.0)] {
+                let r = CGRect(x: x - w / 2, y: -15, width: w, height: 24)
+                c.fill(Path(ellipseIn: r), with: .color(beeBlack))
+                c.fill(Path(ellipseIn: r.insetBy(dx: w * 0.22, dy: 5)), with: .color(Color(white: 0.55)))
+            }
+            // Two thin antenna blades on top, leaning out; the far one is foreshortened when the head turns.
+            for side in [-1.0, 1.0] {
+                let bx = mx + side * 21 * (side < 0 ? 1 - 0.3 * u : 1 + 0.1 * u)
+                let lean = side * (side < 0 ? 8 - 3 * u : 8.0), tipY = side < 0 ? -70 + 5 * u : -70.0
+                var blade = Path()
+                blade.move(to: CGPoint(x: bx - 4.2, y: -34))
+                blade.addQuadCurve(to: CGPoint(x: bx + lean, y: tipY), control: CGPoint(x: bx - 3 + lean * 0.15, y: -58))
+                blade.addLine(to: CGPoint(x: bx + lean + side * 1.6, y: tipY + 5))
+                blade.addQuadCurve(to: CGPoint(x: bx + 4.2, y: -34), control: CGPoint(x: bx + 4 + lean * 0.4, y: -54))
+                blade.closeSubpath()
+                c.fill(blade, with: .linearGradient(Gradient(colors: [beeYellow, beeYellowDeep]), startPoint: CGPoint(x: bx - 4, y: -52), endPoint: CGPoint(x: bx + 5, y: -44)))
+                c.stroke(blade, with: .color(beeBlack), style: StrokeStyle(lineWidth: 1.5, lineJoin: .round))
+                var tip = Path(); tip.move(to: CGPoint(x: bx + lean * 0.78, y: tipY + 10)); tip.addLine(to: CGPoint(x: bx + lean, y: tipY + 1))
+                c.stroke(tip, with: .color(beeBlack), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+            }
+        case (.bee, .front):
+            var h = c
+            h.clip(to: Path(ellipseIn: CGRect(x: -46.4, y: -46.4, width: 92.8, height: 92.8)))
+            h.fill(v.path, with: .linearGradient(Gradient(colors: [beeYellow, beeYellow, beeYellowDeep]), startPoint: CGPoint(x: -20, y: -46), endPoint: CGPoint(x: 10, y: 40)))
+            // Dark crest down the middle of the cap, ending in the brow's V.
+            var crest = Path()
+            crest.move(to: CGPoint(x: mx - 7, y: -50)); crest.addLine(to: CGPoint(x: mx + 7, y: -50))
+            crest.addLine(to: CGPoint(x: mx + 3.5, y: v.browMid + 1)); crest.addLine(to: CGPoint(x: mx - 3.5, y: v.browMid + 1)); crest.closeSubpath()
+            h.fill(crest, with: .color(beeBlack.opacity(0.9)))
+            h.stroke(v.path, with: .color(beeBlack), style: StrokeStyle(lineWidth: 2.2, lineJoin: .round))
+            for i in 0..<2 {   // two short vents on the near cheek guard
+                var vent = Path(); let y = v.ry + 2 + Double(i) * 6
+                vent.move(to: CGPoint(x: v.rx + 24, y: y)); vent.addLine(to: CGPoint(x: v.rx + 32, y: y + 1))
+                h.stroke(vent, with: .color(beeBlack.opacity(0.75)), style: StrokeStyle(lineWidth: 2, lineCap: .round))
+            }
+            var sheen = h; sheen.translateBy(x: mx - 16, y: -36); sheen.rotate(by: .degrees(-22))
+            sheen.fill(Path(ellipseIn: CGRect(x: -10, y: -3.5, width: 20, height: 7)), with: .color(.white.opacity(0.5)))
+        case (.prime, .back):
+            // The leader's tall ear antennae: a silver ear cylinder on each side with a blue rod rising from it.
+            for side in [-1.0, 1.0] {
+                let far = side < 0 ? u : 0
+                let x = side < 0 ? -46 + 6 * u : 46 - 2 * u, w = 16 - 7 * far
+                let rodTop = -66 + 10 * far
+                var rod = Path(); rod.addRoundedRect(in: CGRect(x: x - 3, y: rodTop, width: 6, height: -8 - rodTop), cornerSize: CGSize(width: 3, height: 3))
+                c.fill(rod, with: .linearGradient(Gradient(colors: [primeBlue, primeBlueDeep]), startPoint: CGPoint(x: x - 3, y: 0), endPoint: CGPoint(x: x + 3, y: 0)))
+                c.stroke(rod, with: .color(primeBlueDeep), lineWidth: 1.2)
+                c.fill(Path(ellipseIn: CGRect(x: x - 3.5, y: rodTop - 3, width: 7, height: 6)), with: .color(silver))
+                let ear = CGRect(x: x - w / 2, y: -20, width: w, height: 30)
+                c.fill(Path(roundedRect: ear, cornerRadius: w / 2), with: .linearGradient(Gradient(colors: [silver, silverDeep]), startPoint: CGPoint(x: ear.minX, y: 0), endPoint: CGPoint(x: ear.maxX, y: 0)))
+                c.stroke(Path(roundedRect: ear, cornerRadius: w / 2), with: .color(primeBlueDeep), lineWidth: 1.4)
+            }
+        case (.prime, .front):
+            var h = c
+            h.clip(to: Path(ellipseIn: CGRect(x: -46.4, y: -46.4, width: 92.8, height: 92.8)))
+            h.fill(v.path, with: .linearGradient(Gradient(colors: [primeBlue, primeBlue, primeBlueDeep]), startPoint: CGPoint(x: -20, y: -46), endPoint: CGPoint(x: 10, y: 40)))
+            // Silver crest: a wide plate down the forehead into the brow's V, with a ridge line.
+            var crest = Path()
+            crest.move(to: CGPoint(x: mx - 11, y: -50)); crest.addLine(to: CGPoint(x: mx + 11, y: -50))
+            crest.addLine(to: CGPoint(x: mx + 6, y: v.browMid + 2)); crest.addLine(to: CGPoint(x: mx, y: v.browMid + 8)); crest.addLine(to: CGPoint(x: mx - 6, y: v.browMid + 2)); crest.closeSubpath()
+            h.fill(crest, with: .linearGradient(Gradient(colors: [.white, silver, silverDeep]), startPoint: CGPoint(x: mx - 10, y: -46), endPoint: CGPoint(x: mx + 8, y: v.browMid)))
+            h.stroke(crest, with: .color(primeBlueDeep), lineWidth: 1.4)
+            var ridge = Path(); ridge.move(to: CGPoint(x: mx, y: -48)); ridge.addLine(to: CGPoint(x: mx, y: v.browMid + 5))
+            h.stroke(ridge, with: .color(silverDeep), lineWidth: 1.3)
+            h.stroke(v.path, with: .color(primeBlueDeep), style: StrokeStyle(lineWidth: 2.2, lineJoin: .round))
+            // Silver trim along the cheek guards' inner edge.
+            var trim = Path(); trim.move(to: CGPoint(x: v.rx + 16, y: v.ry - 17)); trim.addLine(to: CGPoint(x: v.rx + 19, y: v.ry + 15))
+            trim.move(to: CGPoint(x: v.lx - 16, y: v.ly - 17)); trim.addLine(to: CGPoint(x: v.lx - 19, y: v.ly + 15))
+            h.stroke(trim, with: .color(silver), style: StrokeStyle(lineWidth: 2.4, lineCap: .round))
+            var sheen = h; sheen.translateBy(x: mx - 18, y: -37); sheen.rotate(by: .degrees(-22))
+            sheen.fill(Path(ellipseIn: CGRect(x: -9, y: -3, width: 18, height: 6)), with: .color(.white.opacity(0.45)))
+        }
     }
 
     // MARK: LED dots — any lit shape is sampled on one lattice so both eyes share the same pixel grid.
@@ -1956,6 +2119,8 @@ struct CritterPlayground: View {
                 Text("ฉากพิเศษ · " + cat.0).font(.caption).foregroundStyle(.secondary)
                 FlowButtons(items: cat.1.map { (sc: Critter.Scene) -> (String, () -> Void) in (CritterPlayground.sceneName(sc), { engine.perform(scene: sc) }) })
             }
+            Text("แต่งตัว (คอสเพลย์เฉพาะหัว · น้ำเสียงเปลี่ยนตามชุด)").font(.caption).foregroundStyle(.secondary)
+            FlowButtons(items: Critter.Costume.allCases.map { (c: Critter.Costume) -> (String, () -> Void) in (c == .none ? "ถอดชุด" : c.emoji + " " + c.name, { model.critterCostume = c }) })
             Text("อากาศ").font(.caption).foregroundStyle(.secondary)
             FlowButtons(items: CritterPlayground.weatherNames.map { (w: (Critter.Weather, String)) -> (String, () -> Void) in (w.1, { engine.setWeather(w.0 == .clear ? nil : w.0) }) } + [("ฝน+ร่ม", { engine.setWeather(.rain, umbrella: true) })])
             Text("ดูแล (ลากบนตัว = ลูบ · ดับเบิลคลิก = เล่นหัว · คลิกขวา = เมนู)").font(.caption).foregroundStyle(.secondary)
@@ -2008,6 +2173,7 @@ struct CritterPreviewCard: View {
                 Menu("อากาศ") { ForEach(CritterPlayground.weatherNames, id: \.0) { w in Button(w.1) { engine.setWeather(w.0 == .clear ? nil : w.0) } }; Button("ฝนตก มีร่ม") { engine.setWeather(.rain, umbrella: true) } }
                 Menu("ท่า") { ForEach(moves, id: \.0) { mv in Button(mv.1) { engine.perform(mv.0) } } }
                 Menu("อารมณ์") { ForEach(moods, id: \.0) { m in Button(m.1) { engine.setMood(m.0, hold: 4) } } }
+                Menu("แต่งตัว") { ForEach(Critter.Costume.allCases, id: \.self) { c in Button(c == .none ? "ถอดชุด" : c.emoji + " " + c.name) { model.critterCostume = c } } }
             }.controlSize(.small).fixedSize()
             if showsCare {
                 HStack(spacing: 6) {
@@ -2025,8 +2191,9 @@ struct CritterPreviewCard: View {
                 Button("หน้าต่างใหญ่") { model.playgroundAction?() }
             }.controlSize(.small)
         }
-        .onAppear { sync(); engine.start() }
+        .onAppear { engine.setCostume(model.critterCostume, announce: false); sync(); engine.start() }
         .onDisappear { engine.stop() }
+        .onChange(of: model.critterCostume) { _, v in engine.setCostume(v) }
         .onChange(of: model.critterPlayfulness) { _, _ in sync() }
         .onChange(of: model.critterReduceMotion) { _, _ in sync() }
         .onChange(of: model.critterSpeech) { _, _ in sync() }
@@ -2042,7 +2209,7 @@ struct CritterPreviewCard: View {
         model.careAction?(a)
     }
     private func sync() {
-        engine.scheduler.playfulness = model.critterPlayfulness
+        engine.setPlayfulness(model.critterPlayfulness)
         engine.reduceMotion = model.critterReduceMotion || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         engine.quiet = !model.critterSpeech
         engine.scheduler.cartoon = model.critterCartoon; engine.eyeTracking = model.critterEyeTracking; engine.weatherEnabled = model.critterWeather
@@ -2064,6 +2231,39 @@ struct CritterPreviewCard: View {
     }
 }
 /// The chips in the click menu: dark text on a light pill, so they read on the white capsule with any appearance.
+/// The capsule menu above the character. Sized by its content; the engine learns the size for hit testing.
+struct CritterMenuBar: View {
+    @ObservedObject var engine: CritterEngine
+    var body: some View {
+        HStack(spacing: 3) {
+            switch engine.menu {
+            case .root:
+                Button("เมนู") { engine.closeMenu(); engine.onTap?() }
+                Button("ให้อาหาร") { engine.closeMenu(); engine.act(.snack) }
+                Button("เล่นด้วย") { engine.choose(.play) }
+                Button("แต่งตัว") { engine.choose(.costume) }
+            case .costume:
+                ForEach(Critter.Costume.allCases, id: \.self) { c in
+                    Button(c == .none ? "ถอดชุด" : c.emoji + " " + c.short) { engine.wear(c) }
+                        .opacity(c == engine.costume ? 0.45 : 1)   // the one being worn is shown dimmed
+                }
+            case .play:
+                Button("ลูบหัว") { engine.closeMenu(); engine.act(.pat) }
+                Button("เกาคาง") { engine.closeMenu(); engine.act(.chin) }
+                Button("เล่นหัว") { engine.closeMenu(); engine.act(.tease) }
+                Button("เป่ายิ้งฉุบ") { engine.choose(.rps) }
+            case .rps:
+                ForEach(0..<3, id: \.self) { i in Button(Critter.Care.rpsEmoji[i]) { engine.playRPS(user: i) } }
+            case .closed: EmptyView()
+            }
+        }
+        .buttonStyle(MenuChip()).font(.system(size: 11, weight: .medium))
+        .padding(.horizontal, 5).padding(.vertical, 3)
+        .background(Color.white.opacity(0.96), in: Capsule())
+        .overlay(Capsule().strokeBorder(Color.black.opacity(0.12), lineWidth: 0.5))
+        .fixedSize()
+    }
+}
 struct MenuChip: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label

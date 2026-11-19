@@ -58,7 +58,7 @@ Veda คือแอป macOS สำหรับ**พูดแล้วพิม
 
 ## Build จากซอร์ส
 ```bash
-bash outputs/Veda/scripts/test.sh    # 346 checks
+bash outputs/Veda/scripts/test.sh    # 377 checks
 bash outputs/Veda/scripts/build.sh   # -> outputs/Veda/Veda.zip
 ```
 ต้องมี Xcode Command Line Tools · whisper-server และโมเดล small อยู่ใน `outputs/Veda/runtime/` (ดู `outputs/Veda/runtime/WHISPER-LICENSE`) · บันทึกการทดสอบและการตัดสินใจทั้งหมดอยู่ใน `outputs/Veda/VALIDATION.md`

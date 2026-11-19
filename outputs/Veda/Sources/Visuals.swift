@@ -92,6 +92,86 @@ enum OverlaySnapshots {
         try metrics.write(to: URL(fileURLWithPath: directory + "/acting-frames.json"))
         print("Rendered 29 expressions at radius 24 and 44, plus 90 frames of eight live-engine reactions.")
     }
+    /// Cosplay review: the bee helmet over the expressions (front and turned), during the drop, in two scenes,
+    /// at the real corner size (24) and the preview size (44), plus the voice lines it picks.
+    static func renderCostume(to directory: String) throws {
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        func sheet(_ samples: [(String, CritterEngine.Snapshot, String?)], columns: Int, cell: CGSize) -> CGImage? {
+            let size = CGSize(width: cell.width * Double(columns), height: cell.height * Double((samples.count + columns - 1) / columns))
+            let canvas = Canvas { context, _ in
+                for (index, sample) in samples.enumerated() {
+                    let x = Double(index % columns) * cell.width, y = Double(index / columns) * cell.height
+                    let light = (index / columns + index % columns) % 2 == 0
+                    context.fill(Path(CGRect(x: x, y: y, width: cell.width, height: cell.height)), with: .color(Color(white: light ? 0.9 : 0.2)))
+                    var s = sample.1
+                    let ground = y + cell.height - 26
+                    s.center = CGPoint(x: x + cell.width / 2, y: ground - s.drawRadius)
+                    s.groundY = ground; s.area = CGRect(x: x, y: y, width: cell.width, height: cell.height)
+                    CritterPainter.draw(s, in: &context)
+                    if let b = sample.2 {
+                        context.draw(Text(b).font(.system(size: 11, weight: .medium, design: .monospaced)).foregroundColor(light ? .black : .white), at: CGPoint(x: x + cell.width / 2, y: y + 14))
+                    }
+                    context.draw(Text(sample.0).font(.system(size: 11)).foregroundColor(light ? .black : .white), at: CGPoint(x: x + cell.width / 2, y: ground + 14))
+                }
+            }.frame(width: size.width, height: size.height)
+            let frame = NSRect(origin: .zero, size: size)
+            let window = NSWindow(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            let host = NSHostingView(rootView: canvas); host.frame = frame; window.contentView = host
+            host.layoutSubtreeIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.015))
+            defer { window.close() }
+            guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return nil }
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            return bitmap.cgImage
+        }
+        func write(_ image: CGImage?, _ name: String) throws {
+            guard let image, let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { return }
+            try data.write(to: URL(fileURLWithPath: directory + "/" + name + ".png"))
+        }
+        let moods: [Critter.Mood] = [.normal, .happy, .curious, .wow, .sad, .annoyed, .shy, .asleep, .loved, .dizzy, .hungry, .laugh]
+        for costume in [Critter.Costume.bee, .prime] { for (radius, eyes) in [(24.0, "pixel"), (44.0, "pixel"), (44.0, "classic")] {
+            var samples = moods.map { m -> (String, CritterEngine.Snapshot, String?) in
+                let engine = CritterEngine(radius: radius)
+                engine.weatherEnabled = false; engine.eyeTracking = false; engine.pixelEyes = eyes == "pixel"
+                engine.setCostume(costume, announce: false); engine.settle(mood: m)
+                return (m.rawValue, engine.snapshot, radius > 30 ? engine.bubble : nil)
+            }
+            for (label, ext) in [("listening", CritterEngine.External.listening), ("thinking", .thinking)] {
+                let engine = CritterEngine(radius: radius)
+                engine.weatherEnabled = false; engine.eyeTracking = false; engine.pixelEyes = eyes == "pixel"
+                engine.setCostume(costume, announce: false); engine.settle(mood: .normal, external: ext, level: 0.6)
+                samples.append((label, engine.snapshot, nil))
+            }
+            for amount in [0.25, 0.6] {   // the helmet dropping onto the head
+                let engine = CritterEngine(radius: radius)
+                engine.weatherEnabled = false; engine.eyeTracking = false; engine.pixelEyes = eyes == "pixel"
+                engine.settle(mood: .happy)
+                var s = engine.snapshot; s.costume = costume; s.costumeT = amount
+                samples.append(("drop \(Int(amount * 100))%", s, nil))
+            }
+            for (scene, t) in [(Critter.Scene.rainUmbrella, 3.0), (.pancake, 2.6)] {
+                let engine = CritterEngine(radius: radius)
+                engine.weatherEnabled = false; engine.eyeTracking = false; engine.pixelEyes = eyes == "pixel"
+                engine.setCostume(costume, announce: false); engine.settle(scene: scene, t: t)
+                samples.append((scene.rawValue, engine.snapshot, nil))
+            }
+            try write(sheet(samples, columns: 6, cell: radius > 30 ? CGSize(width: 190, height: 190) : CGSize(width: 120, height: 110)), "costume-\(costume.rawValue)-\(Int(radius))-\(eyes)")
+        } }
+        // Voice sample: the same moments with and without the costume (text only, printed for review).
+        for c in [Critter.Costume.bee, .prime] { for m in [Critter.Mood.happy, .sad, .hungry, .bye] { print(c.rawValue, m.rawValue, "→", c.says(m)?.joined(separator: " | ") ?? "-") } }
+        for line in ["ฟ้าสวย…", "อร่อย!", "เป่า… ยิ้ง… ฉุบ!"] { for c in [Critter.Costume.bee, .prime] { print(c.rawValue, line, "→", [0.1, 0.4, 0.6, 0.9].map { c.restyle(line, kind: .scene, roll: $0) }.joined(separator: " | ")) } }
+        // The click menu's real width against the old fixed hit-test widths (the "can't change costume" bug).
+        for (menu, oldWidth) in [(CritterEngine.Menu.root, 268.0), (.costume, 196.0), (.play, 300.0), (.rps, 150.0)] {
+            let engine = CritterEngine(); engine.choose(menu)
+            let host = NSHostingView(rootView: CritterMenuBar(engine: engine))
+            let fit = host.fittingSize
+            engine.menuMeasured[menu] = fit
+            let rect = engine.menuRect()
+            print("menu \(menu): content \(Int(fit.width))×\(Int(fit.height)) · old hit width \(Int(oldWidth)) · new hit rect \(Int(rect.width))×\(Int(rect.height)) inside panel \(Int(engine.panelSize.width)) → \(rect.minX >= 0 && rect.maxX <= engine.panelSize.width && rect.width >= fit.width ? "ok" : "CLIPPED")")
+        }
+        print("Rendered both costumes at radius 24 and 44 (pixel and classic eyes).")
+    }
     static func renderSceneMotion(to directory: String) throws {
         try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
         for scene in Critter.Scene.allCases {

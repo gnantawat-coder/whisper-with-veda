@@ -100,11 +100,41 @@ struct TalkKey: Equatable {
     var stored: String { String(keyCode) }
     init(keyCode: Int64) { self.keyCode = keyCode }
     init?(stored: String) { guard let k = Int64(stored), k >= 0 else { return nil }; keyCode = k }
-    /// Keys that cannot serve: Fn itself, caps lock (toggles), Space (TH/EN chord), Esc (cancel).
-    static func allowed(_ keyCode: Int64) -> Bool { ![63, 57, 49, 53].contains(keyCode) }
+    /// Only keys that type nothing may serve: the eight modifier keys, F1–F20, and the navigation cluster.
+    /// A letter, digit or punctuation key would be swallowed for good and could never be typed again.
+    static let plainCodes: Set<Int64> = [122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111, 105, 107, 113, 106, 64, 79, 80, 90, 115, 119, 116, 121, 114, 117]
+    static func allowed(_ keyCode: Int64) -> Bool { modifierCodes.contains(keyCode) || plainCodes.contains(keyCode) }
+    /// Why a key was turned down, in the user's words.
+    static func refusal(_ keyCode: Int64) -> String {
+        switch keyCode {
+        case 63: return "Fn ใช้พูดได้อยู่แล้ว ไม่ต้องตั้ง"
+        case 57: return "Caps Lock ใช้ไม่ได้ เพราะเป็นปุ่มสลับสถานะ"
+        case 49: return "Space ใช้คู่กับปุ่มพูดเพื่อสลับ TH/EN"
+        default: return "ปุ่มนี้ใช้พิมพ์ จึงตั้งเป็นปุ่มพูดไม่ได้ · เลือก ⌥ ขวา, ⌘ ขวา, ⌃ ขวา หรือ F13–F20"
+        }
+    }
     /// For modifier keys the tap sees flagsChanged; this is the flag that tells "down".
     var modifierMask: UInt64? {
         switch keyCode { case 54, 55: return 1 << 20; case 56, 60: return 1 << 17; case 58, 61: return 1 << 19; case 59, 62: return 1 << 18; default: return nil }
+    }
+}
+
+/// What one keyboard event means while the user is choosing a talk key. Used by the event tap (which sees
+/// every key first, including ones it normally consumes such as F18) and by the in-app monitor.
+enum TalkKeyCapture {
+    enum Result: Equatable { case set(TalkKey), cancel, refused(String), ignore }
+    static func decide(keyDown: Bool, flagsChanged: Bool, keyCode: Int64, flags: UInt64, isRepeat: Bool) -> Result {
+        if keyDown {
+            if isRepeat { return .ignore }
+            if keyCode == 53 { return .cancel }
+            return TalkKey.allowed(keyCode) && !TalkKey.modifierCodes.contains(keyCode) ? .set(TalkKey(keyCode: keyCode)) : .refused(TalkKey.refusal(keyCode))
+        }
+        guard flagsChanged else { return .ignore }
+        if keyCode == 63 { return flags & (1 << 23) != 0 ? .refused(TalkKey.refusal(63)) : .ignore }
+        if keyCode == 57 { return .refused(TalkKey.refusal(57)) }
+        let key = TalkKey(keyCode: keyCode)
+        guard let mask = key.modifierMask else { return .ignore }
+        return flags & mask != 0 ? .set(key) : .ignore      // taken on the press; the release means nothing
     }
 }
 
@@ -1299,6 +1329,85 @@ extension Critter {
     static func allowsBubble(_ kind: BubbleKind, quiet: Bool) -> Bool {
         guard quiet else { return true }
         switch kind { case .playfulness, .language, .listening, .thinking, .done: return true; case .mood, .notice, .scene, .care: return false }
+    }
+}
+extension Critter {
+    /// Head-only cosplay. The costume changes the drawing and the voice, never the rules: moods, scenes and care
+    /// stay the same. Functional text (notices, the TH/EN pill, playfulness and costume changes) is never restyled.
+    enum Costume: String, CaseIterable, Codable {
+        case none, bee, prime
+        /// Original drawings and original lines styled after Transformers characters — no official names, logos
+        /// or quoted dialogue, because the project is public. "bee": the yellow-black scout who talks through a radio.
+        /// "prime": the blue-and-silver leader with tall ear antennae who speaks calmly and formally (ข้า/เจ้า).
+        var name: String { switch self { case .none: return "ไม่ใส่"; case .bee: return "หุ่นผึ้งสอดแนม"; case .prime: return "หุ่นผู้นำ" } }
+        var short: String { switch self { case .none: return "ไม่ใส่"; case .bee: return "หุ่นผึ้ง"; case .prime: return "หุ่นผู้นำ" } }
+        var emoji: String { switch self { case .none: return "🙂"; case .bee: return "🐝"; case .prime: return "🚛" } }
+        var putOn: [String] {
+            switch self {
+            case .none: return []
+            case .bee: return ["📻 ทรานส์ฟอร์ม…! ปิ๊บ ปิ๊บ", "📻 ซ่า… หน่วยสอดแนม รายงานตัว!"]
+            case .prime: return ["ทรานส์ฟอร์ม…! ผู้นำพร้อมแล้ว", "ทีม… รวมพล!"]
+            }
+        }
+        var takeOff: [String] {
+            switch self {
+            case .none: return []
+            case .bee: return ["📻 ถอดชุด… กลับร่างเดิม ปิ๊บ", "ปิ๊บ… พักภารกิจก่อนนะ"]
+            case .prime: return ["ภารกิจจบ… ข้าขอพักก่อน", "ถอดเกราะ… กลับร่างเดิม"]
+            }
+        }
+        /// The character's own lines for a mood; nil = use the usual words through `restyle`.
+        func says(_ m: Mood) -> [String]? {
+            switch self { case .none: return nil; case .bee: return Costume.beeLines[m]; case .prime: return Costume.primeLines[m] }
+        }
+        /// Bee talks like a radio picking up stations: static, beeps, short mission phrases.
+        static let beeLines: [Mood: [String]] = [
+            .bored: ["📻 ซ่าาา……", "ปิ๊บ……", "📻 …ไม่มีสัญญาณ…"], .thinking: ["📻 ถอดรหัส…", "ปิ๊บ…ปิ๊บ…"],
+            .sleepy: ["📻 …พลังงานต่ำ… zZ"], .asleep: ["📻 ซ่า… z z z"],
+            .curious: ["ปิ๊บ?", "📻 กำลังสแกน…?", "บี๊บ-บู๊บ?"], .happy: ["ปิ๊บ ปิ๊บ! ^^", "บี๊บ-บู๊บ ♪", "📻 …ข่าวดี!…"],
+            .done: ["📻 ภารกิจสำเร็จ!", "ส่งถึงฐานแล้ว ปิ๊บ!"], .shy: ["ปิ๊บ… ///", "📻 …เขินนะ… ///"],
+            .sad: ["📻 …สัญญาณ…ขาดหาย… TT", "ปิ๊บ… TT"], .wow: ["ปี๊บ!", "📻 ตรวจพบ…ของเจ๋ง!"],
+            .startled: ["บี๊บ!!", "📻 แจ้งเตือน!!"], .worried: ["📻 …ฐาน…ได้ยินไหม…?"], .dizzy: ["📻 ไจโรรวน… @_@"],
+            .peek: ["📻 สอดแนม…?"], .cold: ["📻 เปิดฮีตเตอร์! brr"], .annoyed: ["บี๊บ! >_<", "📻 สัญญาณรบกวน!"],
+            .bye: ["📻 ออกลาดตระเวน… เดี๋ยวมา!", "ปิ๊บ… ไปละ"], .back: ["📻 หน่วยสอดแนมกลับถึงฐาน!", "ปิ๊บ ปิ๊บ! กลับมาแล้ว"],
+            .hungry: ["📻 พลังงานต่ำ… ขอเติมพลังหน่อย", "ปิ๊บ… แบตใกล้หมด"], .sulky: ["📻 …ไม่รับสาย…", "ปิ๊บ. หึ"],
+            .loved: ["📻 …เพื่อนรัก… ♥", "ปิ๊บ ♥"], .laugh: ["บี๊บ บี๊บ บี๊บ! 555", "📻 ฮ่า ฮ่า ฮ่า!"],
+            .full: ["📻 เติมพลังครบ 100%!", "ถังเต็ม! ปิ๊บ"], .hot: ["📻 เครื่องร้อนเกิน… ระบายความร้อน!"],
+            .zen: ["📻 …โหมดสแตนด์บาย…"], .pant: ["📻 เครื่อง…ทำงาน…หนัก…"], .groove: ["📻 ♪ เปิดเพลงจากวิทยุ ♪", "บี๊บ-บ๊อบ ♪"],
+        ]
+        /// Prime speaks like a calm, formal leader: ข้า/เจ้า, สหาย, ทีม, short steady sentences.
+        static let primeLines: [Mood: [String]] = [
+            .bored: ["…ข้ากำลังเฝ้ายาม", "สงบ… ก่อนพายุ"], .thinking: ["ข้ากำลังไตร่ตรอง…", "ให้ข้าวางแผนก่อน…"],
+            .sleepy: ["แม้ผู้นำก็ต้องพัก… zZ"], .asleep: ["z z z… ระบบพักฟื้น"],
+            .curious: ["นั่นคืออะไร…?", "น่าสนใจ… ข้าขอดูหน่อย"], .happy: ["เยี่ยมมาก สหาย!", "ข้าภูมิใจในตัวเจ้า"],
+            .done: ["ภารกิจสำเร็จ ทีม!", "ข้อความถึงปลายทางแล้ว สหาย"], .shy: ["ผู้นำ…ก็เขินเป็นนะ ///"],
+            .sad: ["แม้ในความมืด… ความหวังยังอยู่ TT", "ข้าเสียใจ…"], .wow: ["ไม่น่าเชื่อ!", "ช่างยิ่งใหญ่!"],
+            .startled: ["ระวัง!!", "ตั้งรับ!!"], .worried: ["ข้ารู้สึกถึงอันตราย…?"], .dizzy: ["ระบบนำทาง…เสียหาย @_@"],
+            .peek: ["ข้าขอสำรวจก่อน…"], .cold: ["ความหนาวหยุดข้าไม่ได้ brr"], .annoyed: ["พอได้แล้ว! >_<", "ข้าเตือนแล้วนะ"],
+            .bye: ["ข้าต้องไปแล้ว… จงรักษาตัว", "ทีม… ออกเดินทาง!"], .back: ["ข้ากลับมาแล้ว สหาย", "ผู้นำกลับมาประจำการ!"],
+            .hungry: ["แม้ผู้นำก็ต้องการพลังงาน…", "ขอเติมพลังสักหน่อยเถิด"], .sulky: ["…ข้าจะเงียบไว้ก่อน", "หึ ข้าไม่โกรธ…หรอก"],
+            .loved: ["มิตรภาพคือพลังที่แท้จริง ♥", "ข้าขอบใจเจ้า ♥"], .laugh: ["ฮ่า ฮ่า ฮ่า! สนุกนัก", "ฮ่าฮ่า! ข้าชอบ"],
+            .full: ["พลังงานเต็มเปี่ยม!", "พร้อมออกรบ!"], .hot: ["อุณหภูมิสูง… แต่ข้ายังไหว"],
+            .zen: ["…ข้ากำลังทำสมาธิ"], .pant: ["ข้า…ยังไม่ยอมแพ้…"], .groove: ["♪ แม้ผู้นำก็เต้นได้ ♪", "ทีม! เต้น! ♪"],
+        ]
+        /// Any other line (scenes, care replies, wants) said in the costume's tone. `roll` in 0..<1 picks the variant.
+        func restyle(_ text: String, kind: BubbleKind, roll: Double) -> String {
+            guard self != .none else { return text }
+            switch kind { case .notice, .playfulness, .language, .listening: return text; case .mood, .thinking, .done, .scene, .care: break }
+            let t = text.trimmingCharacters(in: .whitespaces)
+            let pick = Int(max(0, min(0.999, roll)) * 4)
+            switch self {
+            case .none: return text
+            case .bee:
+                if t.isEmpty || t.contains("📻") || t.contains("ปิ๊บ") || t.contains("บี๊บ") { return text }   // already in voice
+                if t.count <= 3 { return "ปิ๊บ" + t }
+                return ["📻 " + t, "📻 ซ่า… " + t, t + " ปิ๊บ!", "📻 " + t + " …ซ่า"][pick]
+            case .prime:
+                if t.isEmpty || t.contains("สหาย") || t.hasPrefix("ทีม!") || t.hasPrefix("ข้าว่า") || t.hasPrefix("ฮึ่ม") { return text }
+                if t.count <= 3 { return "ฮึ่ม" + t }
+                return ["สหาย… " + t, "ทีม! " + t, "ข้าว่า… " + t, t + " …สหาย"][pick]
+            }
+        }
     }
 }
 extension Critter.Scheduler {

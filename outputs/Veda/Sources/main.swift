@@ -223,7 +223,13 @@ final class Model: ObservableObject {
     var snapLast = "-"
     // Corner character vs the classic bar; the character is the default the user asked for.
     @Published var overlayStyle = UserDefaults.standard.string(forKey: "overlayStyle") ?? "character" { didSet { UserDefaults.standard.set(overlayStyle, forKey: "overlayStyle") } }
-    @Published var critterPlayfulness = UserDefaults.standard.object(forKey: "critterPlayfulness") as? Int ?? 1 { didSet { UserDefaults.standard.set(critterPlayfulness, forKey: "critterPlayfulness") } }
+    @Published var critterPlayfulness = UserDefaults.standard.object(forKey: "critterPlayfulness") as? Int ?? 1 {
+        didSet {
+            UserDefaults.standard.set(critterPlayfulness, forKey: "critterPlayfulness")
+            // Said by the character whichever way the level was changed (settings, playground or Fn + Option).
+            if oldValue != critterPlayfulness { critterCues.send(.mode(critterPlayfulness == 2 ? "ฮะโหน่ง...มาแล้วว" : "ความขี้เล่น: " + ["เงียบ", "ปกติ", "ขี้เล่น"][max(0, min(2, critterPlayfulness))])) }
+        }
+    }
     @Published var critterReduceMotion = UserDefaults.standard.bool(forKey: "critterReduceMotion") { didSet { UserDefaults.standard.set(critterReduceMotion, forKey: "critterReduceMotion") } }
     @Published var critterSpeech = UserDefaults.standard.object(forKey: "critterSpeech") as? Bool ?? true {
         didSet { UserDefaults.standard.set(critterSpeech, forKey: "critterSpeech"); if oldValue != critterSpeech { critterCues.send(.mode(critterSpeech ? "พูดได้แล้ว" : "โหมดเงียบ")) } }
@@ -233,6 +239,8 @@ final class Model: ObservableObject {
     @Published var critterWeather = UserDefaults.standard.object(forKey: "critterWeather") as? Bool ?? true { didSet { UserDefaults.standard.set(critterWeather, forKey: "critterWeather") } }
     @Published var critterEyeTracking = UserDefaults.standard.object(forKey: "critterEyeTracking") as? Bool ?? true { didSet { UserDefaults.standard.set(critterEyeTracking, forKey: "critterEyeTracking") } }
     @Published var critterEyeStyle = UserDefaults.standard.string(forKey: "critterEyeStyle") ?? "pixel" { didSet { UserDefaults.standard.set(critterEyeStyle, forKey: "critterEyeStyle") } }
+    /// Head-only cosplay; the corner character, previews and playground all wear the same one.
+    @Published var critterCostume = Critter.Costume(rawValue: UserDefaults.standard.string(forKey: "critterCostume") ?? "") ?? .none { didSet { UserDefaults.standard.set(critterCostume.rawValue, forKey: "critterCostume") } }
     /// The bond with the character. Persisted as JSON; the engine owns the live copy and reports every change.
     @Published var care: Critter.Care.State = (UserDefaults.standard.data(forKey: "critterCare")).flatMap { try? JSONDecoder().decode(Critter.Care.State.self, from: $0) } ?? Critter.Care.State() {
         didSet { if let d = try? JSONEncoder().encode(care) { UserDefaults.standard.set(d, forKey: "critterCare") } }
@@ -261,23 +269,50 @@ final class Model: ObservableObject {
     }
     @Published var recordingTalkKey = false
     private var talkKeyMonitor: Any?
-    /// Next single key pressed (a plain key, or a modifier on its own) becomes the push-to-talk key. Esc cancels.
+    /// What the last attempt to choose a talk key came to, shown under the button.
+    @Published var talkKeyNote = ""
+    private var talkKeyTimeout: DispatchWorkItem?
+    private var talkKeyResign: NSObjectProtocol?
+    /// The next key pressed becomes the push-to-talk key. The event tap feeds this while it exists, because it
+    /// sees every key before the app does (F18 and the like never reach the window); the in-app monitor is the
+    /// fallback for when Accessibility is not granted and there is no tap.
     func beginRecordingTalkKey() {
         guard talkKeyMonitor == nil else { return }
-        recordingTalkKey = true
+        recordingTalkKey = true; talkKeyNote = "กดปุ่มที่ต้องการ 1 ปุ่ม · Esc ยกเลิก"
         talkKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] e in
-            guard let self else { return e }
-            let code = Int64(e.keyCode)
-            if e.type == .keyDown { if code == 53 { self.endRecordingTalkKey(); return nil }; guard TalkKey.allowed(code) else { return nil }; self.talkKey = TalkKey(keyCode: code); self.endRecordingTalkKey(); return nil }
-            // A modifier: take it on the press (its flag is set), ignore the release.
-            let k = TalkKey(keyCode: code)
-            if k.isModifier, let m = k.modifierMask, e.modifierFlags.rawValue & UInt(m) != 0 { self.talkKey = k; self.endRecordingTalkKey() }
-            return e
+            guard let self, self.recordingTalkKey else { return e }
+            let result = TalkKeyCapture.decide(keyDown: e.type == .keyDown, flagsChanged: e.type == .flagsChanged, keyCode: Int64(e.keyCode),
+                                               flags: UInt64(e.modifierFlags.rawValue), isRepeat: e.type == .keyDown && e.isARepeat)
+            self.applyTalkKeyCapture(result)
+            return e.type == .keyDown ? nil : e
+        }
+        talkKeyTimeout?.cancel()
+        let timeout = DispatchWorkItem { [weak self] in
+            guard let self, self.recordingTalkKey else { return }
+            self.endRecordingTalkKey(); self.talkKeyNote = "ไม่ได้รับปุ่ม · กด \"เปลี่ยนปุ่ม\" เพื่อลองใหม่ (ปุ่มแถวบนของ MacBook เป็นปุ่มสื่อ ตั้งไม่ได้)"
+        }
+        talkKeyTimeout = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: timeout)
+        talkKeyResign = NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            guard let self, self.recordingTalkKey else { return }
+            self.endRecordingTalkKey(); self.talkKeyNote = "ยกเลิกแล้ว (สลับไปแอปอื่น)"
+        }
+    }
+    func applyTalkKeyCapture(_ result: TalkKeyCapture.Result) {
+        guard recordingTalkKey else { return }
+        switch result {
+        case .set(let key):
+            talkKey = key; endRecordingTalkKey()
+            talkKeyNote = "ตั้งเป็น \(key.label) แล้ว · กด \(key.label) ค้างเพื่อพูด ปล่อยเพื่อพิมพ์"
+        case .cancel: endRecordingTalkKey(); talkKeyNote = "ยกเลิกแล้ว"
+        case .refused(let why): talkKeyNote = why + " · ลองปุ่มอื่น"
+        case .ignore: break
         }
     }
     func endRecordingTalkKey() {
         if let talkKeyMonitor { NSEvent.removeMonitor(talkKeyMonitor) }
-        talkKeyMonitor = nil; recordingTalkKey = false
+        talkKeyMonitor = nil; recordingTalkKey = false; talkKeyTimeout?.cancel(); talkKeyTimeout = nil
+        if let talkKeyResign { NotificationCenter.default.removeObserver(talkKeyResign) }; talkKeyResign = nil
     }
     private var shortcutMonitor: Any?
     // Next chord pressed while the settings window is key becomes the shortcut.
@@ -408,6 +443,7 @@ final class Model: ObservableObject {
     var requestTask: Task<Void, Never>?
     var token = UUID()
     var fnDown = false
+    var triggerLabel = "Fn"            // which key started the current take: Fn, F18 or the user's own key
     var started = Date()
     var heldMode: Mode = .th
     var heldVocabulary = ""
@@ -447,7 +483,7 @@ final class Model: ObservableObject {
         let d: [String: Any] = ["build": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development", "model": backend.modelName, "updatedAt": ISO8601DateFormatter().string(from: Date()), "pid": ProcessInfo.processInfo.processIdentifier, "bundlePath": Bundle.main.bundlePath,
             "exclusiveFnReady": exclusiveFnReady, "microphone": microphoneStatus, "accessibility": accessibilityStatus,
             "overlayDispatchMS": overlayReadyMS ?? -1, "captureReadyMS": captureReadyMS ?? -1, "sessionMode": heldMode.rawValue, "backendCheck": backendCheck, "backendReady": ready, "backendRunning": backend.process?.isRunning == true,
-            "phase": String(describing: phase), "lastEvent": lastEvent, "lastStage": lastStage, "status": status, "pendingCount": pending.count, "holdReason": holdReason, "accurateModel": hasAccurateModel, "warmUpMS": warmUpMS, "idleBeforeSec": idleBeforeSec, "snapLast": snapLast, "screenRecording": CGPreflightScreenCaptureAccess(), "tapLevel": tapLevel,
+            "phase": String(describing: phase), "lastEvent": lastEvent, "lastStage": lastStage, "status": status, "pendingCount": pending.count, "holdReason": holdReason, "talkKey": talkKey?.label ?? "-", "accurateModel": hasAccurateModel, "warmUpMS": warmUpMS, "idleBeforeSec": idleBeforeSec, "snapLast": snapLast, "screenRecording": CGPreflightScreenCaptureAccess(), "tapLevel": tapLevel,
             "profileExamples": examples.count, "profileCER": profileCER.map { Int(($0 * 1000).rounded()) } ?? -1, "profileModel": examples.last?["model"] ?? "-"]
         if let data = try? JSONSerialization.data(withJSONObject: d, options: [.prettyPrinted, .sortedKeys]) {
             diagnosticQueue.async { try? data.write(to: URL(fileURLWithPath: Bundle.main.bundleIdentifier == "local.veda.preview" ? "/private/tmp/veda-preview-diagnostics.json" : "/private/tmp/veda-diagnostics.json"), options: .atomic) }
@@ -562,7 +598,7 @@ final class Model: ObservableObject {
         overlayVisible = true; notice = nil; hideNoticeWork?.cancel()
         phase = .starting; showOverlayImmediately?()
         overlayReadyMS = Int((ProcessInfo.processInfo.systemUptime - fnPressedAt) * 1000)
-        lastEvent = "ได้รับ Fn ลง"; captureReadyMS = nil
+        lastEvent = "ได้รับ \(triggerLabel) ลง"; captureReadyMS = nil
         token = holdLatch.begin(); let id = token
         target = nil; targetWasChanged = false; guardState.begin(nil)
         originPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
@@ -624,11 +660,12 @@ final class Model: ObservableObject {
         }
     }
     func release() {
-        lastEvent = "ได้รับ Fn ปล่อย"; fnDown = false; holdLatch.end()
+        lastEvent = "ได้รับ \(triggerLabel) ปล่อย"; fnDown = false; holdLatch.end()
         guard phase == .starting || phase == .recording else {
             if phase == .idle && notice == nil { overlayVisible = false }; writeDiagnostics(); return
         }
         let released = ProcessInfo.processInfo.systemUptime, id = token
+        speechSeconds = max(0, released - fnPressedAt)
         phase = .processing; level = 0
         processingDeadline?.cancel()
         let deadline = DispatchWorkItem { [weak self] in
@@ -713,6 +750,7 @@ final class Model: ObservableObject {
         func urlSession(_ s: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) { if let error { finished(.failure(error)) } }
     }
     var releasedAt: TimeInterval = 0
+    var speechSeconds = 0.0            // how long the talk key was held for the take being processed
     var lastInferenceAt: Date?
     var warmUpTask: Task<Void, Never>?
     var warmUpMS = -1
@@ -761,7 +799,7 @@ final class Model: ObservableObject {
                 if !text.isEmpty && !inserted { pending.append(text) }
                 lastInferenceAt = Date()
                 let elapsed = (ProcessInfo.processInfo.systemUptime - released) * 1000
-                logLatency(mode: mode, ms: elapsed, outcome: text.isEmpty ? "empty" : inserted ? "inserted" : "held")
+                logLatency(mode: mode, ms: elapsed, outcome: text.isEmpty ? "empty" : inserted ? "inserted" : "held", reason: inserted ? "-" : holdReason, characters: text.count)
                 finish()
                 lastStage = text.isEmpty ? "โมเดลไม่พบข้อความ" : inserted ? "แทรกสำเร็จ" : "พักข้อความ: เป้าหมายเปลี่ยนหรือช่องไม่รองรับ Accessibility"
                 status = text.isEmpty ? "ไม่พบข้อความ" : inserted ? "แทรกแล้ว · \(Int(elapsed)) ms" : "ยังไม่ได้พิมพ์ · คลิกไอคอนคลื่นเสียงเพื่อคัดลอก"
@@ -775,7 +813,7 @@ final class Model: ObservableObject {
         }
     }
     func finish() {
-        processingDeadline?.cancel(); processingDeadline = nil
+        processingDeadline?.cancel(); processingDeadline = nil; requestTask = nil
         watch.stop(); timer?.invalidate(); timer = nil
         phase = .idle; target = nil; level = 0; overlayVisible = fnDown
         status = "พร้อม · กด Fn ค้างเพื่อพูด"
@@ -784,7 +822,7 @@ final class Model: ObservableObject {
         holdLatch.end(); token = UUID(); requestTask?.cancel(); requestTask = nil
         audio.cancel(); finish(); status = "ยกเลิกแล้ว"; notice = nil
     }
-    func logLatency(mode: Mode, ms: Double, outcome: String) {
+    func logLatency(mode: Mode, ms: Double, outcome: String, reason: String = "-", characters: Int = 0) {
         lastLatency = "\(mode.rawValue): \(Int(ms)) ms · \(outcome)"
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Veda")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -793,7 +831,7 @@ final class Model: ObservableObject {
         guard let handle = try? FileHandle(forWritingTo: url) else { return }
         defer { try? handle.close() }
         _ = try? handle.seekToEnd()
-        try? handle.write(contentsOf: Data("\(ISO8601DateFormatter().string(from: Date())),\(mode.rawValue),\(Int(ms)),\(outcome),whisper-\(backend.modelName),\(idleBeforeSec),\(warmUpMS)\n".utf8))
+        try? handle.write(contentsOf: Data("\(ISO8601DateFormatter().string(from: Date())),\(mode.rawValue),\(Int(ms)),\(outcome),whisper-\(backend.modelName),\(idleBeforeSec),\(warmUpMS),\(reason.replacingOccurrences(of: ",", with: ";")),\(characters),\(String(format: "%.1f", speechSeconds))\n".utf8))
     }
 }
 
@@ -1073,10 +1111,11 @@ struct Settings: View {
                             HStack(spacing: 8) {
                                 Text("ปุ่มพูดของคุณเอง:").font(.caption)
                                 Text(model.talkKey?.label ?? "ยังไม่ได้ตั้ง").font(.system(size: 12, weight: .medium, design: .rounded)).padding(.horizontal, 8).padding(.vertical, 3).background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
-                                Button(model.recordingTalkKey ? "กดปุ่มที่ต้องการ… (Esc ยกเลิก)" : "เปลี่ยนปุ่ม") { model.recordingTalkKey ? model.endRecordingTalkKey() : model.beginRecordingTalkKey() }.controlSize(.small).disabled(model.phase != .idle)
-                                if model.talkKey != nil { Button("ล้าง") { model.talkKey = nil }.controlSize(.small) }
+                                Button(model.recordingTalkKey ? "กำลังรอปุ่ม… (กดที่นี่เพื่อยกเลิก)" : "เปลี่ยนปุ่ม") { if model.recordingTalkKey { model.endRecordingTalkKey(); model.talkKeyNote = "ยกเลิกแล้ว" } else { model.beginRecordingTalkKey() } }.controlSize(.small).disabled(model.phase != .idle)
+                                if model.talkKey != nil { Button("ล้าง") { model.talkKey = nil; model.talkKeyNote = "ล้างแล้ว · ใช้ Fn ตามเดิม" }.controlSize(.small) }
                             }
-                            Text("สำหรับคีย์บอร์ดที่ไม่มี Fn: เลือกปุ่มเดี่ยว 1 ปุ่ม เช่น F13–F20, ⌥ ขวา, ⌘ ขวา แล้วกดค้างเพื่อพูดเหมือน Fn · ปุ่มธรรมดาจะถูกยึดไว้ไม่ส่งถึงแอปอื่น ปุ่ม ⌘/⌥/⌃/⇧ ยังทำงานตามปกติ · Fn และ F18 ยังใช้ได้เหมือนเดิม").font(.caption).foregroundStyle(.secondary)
+                            if !model.talkKeyNote.isEmpty { Text(model.talkKeyNote).font(.caption).foregroundStyle(model.recordingTalkKey ? Color.accentColor : Color.primary) }
+                            Text("สำหรับคีย์บอร์ดที่ไม่มี Fn หรืออยากได้ปุ่มพูดอีกปุ่ม: เลือกปุ่มเดี่ยว 1 ปุ่มที่ไม่ใช้พิมพ์ เช่น ⌥ ขวา, ⌘ ขวา, ⌃ ขวา หรือ F13–F20 แล้วกดค้างเพื่อพูดเหมือน Fn · ปุ่มแถวบนของ MacBook (ปรับแสง/เสียง) ตั้งไม่ได้ · Fn และ F18 ยังใช้ได้เหมือนเดิม").font(.caption).foregroundStyle(.secondary)
                         }
                         card("Snap Translate") {
                             HStack(spacing: 12) {
@@ -1181,7 +1220,14 @@ struct Settings: View {
                         }
                         card("ดูแล gluu bot") {
                             CritterPreviewCard(model: model, showsCare: true)
-                            Text("ที่ตัวละครมุมจอ: คลิก = เมนู (เมนู / ให้อาหาร / เล่นด้วย) · ดับเบิลคลิก = เล่นด้วย (ลูบหัว เกาคาง เล่นหัว เป่ายิ้งฉุบ) · ลากทันที = ลูบ · กดค้าง 0.35 วินาทีแล้วลาก = ย้ายตำแหน่งบนจอ · คลิกขวา = เมนูเต็ม · เล่นหัวถี่เกิน 4 ครั้งใน 20 วิ จะโดนงอน").font(.caption).foregroundStyle(.secondary)
+                            HStack(spacing: 8) {
+                                Text("ชุดคอสเพลย์ (เฉพาะหัว)").font(.callout)
+                                Picker("ชุดคอสเพลย์", selection: $model.critterCostume) {
+                                    ForEach(Critter.Costume.allCases, id: \.self) { c in Text(c == .none ? "ไม่ใส่" : c.emoji + " " + c.name).tag(c) }
+                                }.labelsHidden().pickerStyle(.segmented).fixedSize()
+                            }
+                            Text("ใส่ชุดแล้วน้ำเสียงเปลี่ยนตามตัวละคร: หุ่นผึ้งพูดแบบวิทยุจูนหาคลื่น (📻 ซ่า… ปิ๊บ!) · หุ่นผู้นำพูดสุขุมแบบผู้นำ (ข้า/เจ้า/สหาย) · ข้อความแจ้งเตือนของแอปยังเป็นภาษาปกติ · ที่ตัวละคร: คลิก › แต่งตัว").font(.caption2).foregroundStyle(.secondary)
+                            Text("ที่ตัวละครมุมจอ: คลิก = เมนู (เมนู / ให้อาหาร / เล่นด้วย / แต่งตัว) · ดับเบิลคลิก = เล่นด้วย (ลูบหัว เกาคาง เล่นหัว เป่ายิ้งฉุบ) · ลากทันที = ลูบ · กดค้าง 0.35 วินาทีแล้วลาก = ย้ายตำแหน่งบนจอ · คลิกขวา = เมนูเต็ม · เล่นหัวถี่เกิน 4 ครั้งใน 20 วิ จะโดนงอน").font(.caption).foregroundStyle(.secondary)
                             Text("การพิมพ์ด้วยเสียงทุกครั้งนับเป็นการใช้เวลาด้วยกัน (+ความสนิทเล็กน้อย สูงสุดวันละ 6) · ให้อาหาร \(c.totalFeeds) · อ่าน \(c.totalReads) · เล่น \(c.totalPlays) · ลูบ \(c.totalStrokes) · พิมพ์ด้วยกัน \(c.totalDictations) ครั้ง").font(.caption2).foregroundStyle(.secondary)
                         }
                         card("อารมณ์ขันและอากาศ") {
@@ -1391,19 +1437,21 @@ final class Delegate: NSObject, NSApplicationDelegate {
                 let engine = CritterEngine()
                 let p = CritterPanel(engine: engine)
                 engine.onTap = { [weak self] in self?.showSettings() }
-                engine.settingsIsFront = { [weak self] in (self?.settings?.isVisible ?? false) && (self?.settings?.isKeyWindow ?? false) }
                 model.$phase.receive(on: RunLoop.main).sink { [weak engine] phase in
                     switch phase { case .starting, .recording: engine?.setExternal(.listening); case .processing: engine?.setExternal(.thinking); case .idle: if engine?.external != .done { engine?.setExternal(.idle) } }
                 }.store(in: &critterBag)
                 model.$level.receive(on: RunLoop.main).sink { [weak engine] l in engine?.level = Double(l) }.store(in: &critterBag)
                 model.critterCues.receive(on: RunLoop.main).sink { [weak engine] c in engine?.cue(c) }.store(in: &critterBag)
-                model.$critterPlayfulness.receive(on: RunLoop.main).sink { [weak engine] v in engine?.scheduler.playfulness = v }.store(in: &critterBag)
+                model.$critterPlayfulness.receive(on: RunLoop.main).sink { [weak engine] v in engine?.setPlayfulness(v) }.store(in: &critterBag)
                 model.$critterReduceMotion.receive(on: RunLoop.main).sink { [weak engine] v in engine?.reduceMotion = v || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }.store(in: &critterBag)
                 model.$critterSpeech.receive(on: RunLoop.main).sink { [weak engine] v in engine?.quiet = !v }.store(in: &critterBag)
                 model.$critterCartoon.receive(on: RunLoop.main).sink { [weak engine] v in engine?.scheduler.cartoon = v }.store(in: &critterBag)
                 model.$critterWeather.receive(on: RunLoop.main).sink { [weak engine] v in engine?.weatherEnabled = v }.store(in: &critterBag)
                 model.$critterEyeTracking.receive(on: RunLoop.main).sink { [weak engine] v in engine?.eyeTracking = v }.store(in: &critterBag)
                 model.$critterEyeStyle.receive(on: RunLoop.main).sink { [weak engine] v in engine?.pixelEyes = v == "pixel" }.store(in: &critterBag)
+                engine.setCostume(model.critterCostume, announce: false)   // restored quietly; later changes are announced
+                model.$critterCostume.receive(on: RunLoop.main).sink { [weak engine] v in engine?.setCostume(v) }.store(in: &critterBag)
+                engine.costumeChanged = { [weak self] v in self?.model.critterCostume = v }
                 // The corner character owns the bond; settings buttons act on it, and every change is saved.
                 engine.care = model.care
                 engine.careChanged = { [weak self] st in self?.model.care = st }
@@ -1489,8 +1537,7 @@ final class Delegate: NSObject, NSApplicationDelegate {
                 self.model.fnDown = false
                 if self.model.phase != .idle && self.model.phase != .processing { self.model.cancel() }
                 self.model.critterPlayfulness = (self.model.critterPlayfulness + 1) % 3
-                let label = "ความขี้เล่น: " + ["เงียบ", "ปกติ", "ขี้เล่น"][self.model.critterPlayfulness]
-                self.model.showNotice(label); self.model.critterCues.send(.mode(self.model.critterPlayfulness == 2 ? "ฮะโหน่ง...มาแล้วว" : label))
+                self.model.showNotice("ความขี้เล่น: " + ["เงียบ", "ปกติ", "ขี้เล่น"][self.model.critterPlayfulness])
             }
         }
     }
@@ -1511,6 +1558,14 @@ final class Delegate: NSObject, NSApplicationDelegate {
                 return Unmanaged.passUnretained(event)
             }
             let key = event.getIntegerValueField(.keyboardEventKeycode)
+            // Choosing a talk key: decide here, before any shortcut below can consume the key.
+            if owner.model.recordingTalkKey {
+                let result = TalkKeyCapture.decide(keyDown: type == .keyDown, flagsChanged: type == .flagsChanged, keyCode: key, flags: event.flags.rawValue,
+                                                   isRepeat: event.getIntegerValueField(.keyboardEventAutorepeat) != 0)
+                if result != .ignore { DispatchQueue.main.async { owner.model.applyTalkKeyCapture(result) } }
+                // Plain keys stop here (so nothing is typed or triggered); modifier changes always pass.
+                return type == .flagsChanged ? Unmanaged.passUnretained(event) : nil
+            }
             if (type == .keyDown || type == .keyUp), key == Int64(kVK_Space) {
                 let outcome = owner.shortcut.space(down: type == .keyDown, repeatKey: event.getIntegerValueField(.keyboardEventAutorepeat) != 0)
                 if let action = outcome.action { owner.dispatchShortcut(action) }
@@ -1524,17 +1579,17 @@ final class Delegate: NSObject, NSApplicationDelegate {
                 return nil
             }
             if owner.model.externalF18, key == Int64(kVK_F18), type == .keyDown || type == .keyUp {
-                if let action = owner.shortcut.trigger(.f18, down: type == .keyDown) { owner.dispatchShortcut(action) }
+                if let action = owner.shortcut.trigger(.f18, down: type == .keyDown) { owner.model.triggerLabel = "F18"; owner.dispatchShortcut(action) }
                 return nil
             }
             // The user's own push-to-talk key: a plain key is consumed on both edges; a modifier key passes through.
             if let tk = owner.model.talkKey, key == tk.keyCode {
                 if let m = tk.modifierMask, type == .flagsChanged {
-                    if let action = owner.shortcut.trigger(.custom, down: event.flags.rawValue & m != 0) { owner.dispatchShortcut(action) }
+                    if let action = owner.shortcut.trigger(.custom, down: event.flags.rawValue & m != 0) { owner.model.triggerLabel = tk.label; owner.dispatchShortcut(action) }
                     return Unmanaged.passUnretained(event)
                 }
                 if tk.modifierMask == nil, type == .keyDown || type == .keyUp {
-                    if let action = owner.shortcut.trigger(.custom, down: type == .keyDown) { owner.dispatchShortcut(action) }
+                    if let action = owner.shortcut.trigger(.custom, down: type == .keyDown) { owner.model.triggerLabel = tk.label; owner.dispatchShortcut(action) }
                     return nil
                 }
             }
@@ -1544,7 +1599,7 @@ final class Delegate: NSObject, NSApplicationDelegate {
                 return Unmanaged.passUnretained(event)
             }
             guard type == .flagsChanged, key == 63 else { return Unmanaged.passUnretained(event) }
-            if let action = owner.shortcut.trigger(.fn, down: event.flags.contains(.maskSecondaryFn)) { owner.dispatchShortcut(action) }
+            if let action = owner.shortcut.trigger(.fn, down: event.flags.contains(.maskSecondaryFn)) { owner.model.triggerLabel = "Fn"; owner.dispatchShortcut(action) }
             return nil
         }
         let mask = CGEventMask((1 << CGEventType.flagsChanged.rawValue) | (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue))
@@ -1625,10 +1680,13 @@ final class Delegate: NSObject, NSApplicationDelegate {
             let engine = CritterEngine(radius: 44, area: Critter.Area(width: 416, height: 272))
             engine.scheduler.playfulness = model.critterPlayfulness
             engine.reduceMotion = model.critterReduceMotion || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-            model.$critterPlayfulness.receive(on: RunLoop.main).sink { [weak engine] v in engine?.scheduler.playfulness = v }.store(in: &critterBag)
+            model.$critterPlayfulness.receive(on: RunLoop.main).sink { [weak engine] v in engine?.setPlayfulness(v) }.store(in: &critterBag)
             model.$critterSpeech.receive(on: RunLoop.main).sink { [weak engine] v in engine?.quiet = !v }.store(in: &critterBag)
             model.$critterEyeStyle.receive(on: RunLoop.main).sink { [weak engine] v in engine?.pixelEyes = v == "pixel" }.store(in: &critterBag)
             engine.pixelEyes = model.critterEyeStyle == "pixel"
+            engine.setCostume(model.critterCostume, announce: false)
+            model.$critterCostume.receive(on: RunLoop.main).sink { [weak engine] v in engine?.setCostume(v) }.store(in: &critterBag)
+            engine.costumeChanged = { [weak self] v in self?.model.critterCostume = v }
             let view = CritterPlayground(engine: engine, model: model)
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 720), styleMask: [.titled, .closable], backing: .buffered, defer: false)
             w.title = "ดูท่าทางและอารมณ์"; w.isReleasedWhenClosed = false; w.contentView = NSHostingView(rootView: view); w.center()
@@ -1653,8 +1711,50 @@ if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--probe-scen
     for _ in 0..<15 { RunLoop.main.run(until: Date().addingTimeInterval(0.2)); xs.append(Int(e.body.x)) }
     print("\(sc.rawValue) x every 0.2 s:", xs); exit(0)
 }
+// Dev probe: how much does the character do on its own at each playfulness level, in simulated time?
+if CommandLine.arguments.count == 2 && CommandLine.arguments[1] == "--probe-playfulness" {
+    func run(_ level: Int, seconds: Double, front: Bool = false, switchTo: Int? = nil) -> (moves: Int, moods: Int, scenes: Int, firstSceneAt: Double) {
+        let e = CritterEngine(); e.weatherEnabled = false; e.sleepAfter = .infinity
+        e.scheduler.playfulness = level; e.settingsIsFront = { front }
+        var first = -1.0, t = 0.0
+        while t < seconds {
+            if let to = switchTo, t >= 60, e.scheduler.playfulness != to { e.setPlayfulness(to) }
+            e.reviewStep(dt: 1.0 / 30); t += 1.0 / 30
+            if first < 0 && e.activity.scenes > 0 { first = t }
+        }
+        return (e.activity.moves, e.activity.moods, e.activity.scenes, first)
+    }
+    for (i, name) in ["quiet", "normal", "playful"].enumerated() {
+        let r = run(i, seconds: 600)
+        print("\(name): in 10 min → moves \(r.moves), moods \(r.moods), scenes \(r.scenes)")
+    }
+    let frozen = run(2, seconds: 600, front: true)
+    print("playful with the settings window in front: moves \(frozen.moves), moods \(frozen.moods), scenes \(frozen.scenes)")
+    var waits: [Int] = []
+    for _ in 0..<8 { let r = run(0, seconds: 1500, switchTo: 2); waits.append(r.firstSceneAt < 0 ? -1 : Int(r.firstSceneAt - 60)) }
+    print("switch quiet→playful at 60 s: seconds until the first scene, 8 runs:", waits)
+    exit(0)
+}
+// Dev probe: does the talk-key recorder capture these keys when they reach the app? (No event tap here.)
+if CommandLine.arguments.count == 2 && CommandLine.arguments[1] == "--probe-talkkey" {
+    let model = Model()
+    func pump() { while let e = app.nextEvent(matching: .any, until: Date().addingTimeInterval(0.15), inMode: .default, dequeue: true) { app.sendEvent(e) } }
+    func key(_ type: NSEvent.EventType, _ code: UInt16, _ flags: NSEvent.ModifierFlags = []) {
+        if let e = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: 0, context: nil,
+                                    characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: code) { app.postEvent(e, atStart: false) }
+    }
+    for (name, type, code, flags) in [("F13", NSEvent.EventType.keyDown, UInt16(105), NSEvent.ModifierFlags()), ("right Option", .flagsChanged, 61, .option), ("right Command", .flagsChanged, 54, .command),
+                                      ("F18", .keyDown, 79, []), ("Space (must be refused)", .keyDown, 49, []), ("A (must be refused)", .keyDown, 0, []), ("Esc (cancels)", .keyDown, 53, [])] {
+        model.talkKey = nil; model.beginRecordingTalkKey(); key(type, code, flags); pump()
+        print("\(name): captured \(model.talkKey?.label ?? "nothing") · still choosing \(model.recordingTalkKey) · note: \(model.talkKeyNote)")
+        model.endRecordingTalkKey()
+    }
+    exit(0)
+}
 if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--render-scene-motion" {
     try OverlaySnapshots.renderSceneMotion(to: CommandLine.arguments[2])
+} else if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--render-costume" {
+    try OverlaySnapshots.renderCostume(to: CommandLine.arguments[2])
 } else if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--render-acting" {
     try OverlaySnapshots.renderActing(to: CommandLine.arguments[2])
 } else if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--render-overlays" {
