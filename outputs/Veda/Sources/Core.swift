@@ -907,6 +907,7 @@ enum Critter {
         }
         static let moodWeights: [(Mood, Double)] = [(.normal, 40), (.shy, 10), (.curious, 12), (.happy, 10), (.bored, 14), (.sleepy, 8), (.wow, 6)]
         var cartoon = false     // gag reel on: cartoon set pieces join the table
+        var costumed = false    // wearing a cosplay: the transform and dodge scenes come up more often
         static func weighted<T>(_ table: [(T, Double)], _ roll: Double) -> T {
             let total = table.reduce(0) { $0 + $1.1 }
             var acc = 0.0
@@ -932,9 +933,14 @@ extension Critter {
         case snack, pat, chin, skateboard, kite
         case toilet, pingpong, meadow
         case bulb, catWalk, catPlay, football
+        case transform, dodge                                        // turn into a vehicle and drive; dodge a volley of bullets
         var isCartoon: Bool { [.eyePop, .tornado, .pancake, .rubber, .dash].contains(self) }
     }
     struct Offset: Equatable { var x: Double, y: Double }
+    /// A cartoon bullet: x on the same 0…1 scale as `SceneFrame.xFrac` (the body's travel range, so a bullet at
+    /// x == xFrac is level with the body's centre), y in radii above the floor, heading in radians
+    /// (0 = flying right), and how much of its streak to draw (bullet time draws a long one).
+    struct Shot: Equatable { var x: Double, y: Double, heading: Double, trail = 1.0 }
     struct SceneFrame: Equatable {
         var scale = 1.0          // drawn body size multiplier
         var hidden = false
@@ -982,6 +988,8 @@ extension Critter {
         var hand = 0, handPhase = 0.0   // 1 = patting the head from above, 2 = scratching under the chin
         var board = false, boardFlip = 0.0, kite = 0.0
         var dashX = 0.0          // horizontal offset in radii; the painter draws afterimages behind it
+        var car = 0.0, carDir = 1.0, carSpeed = 0.0, mech = 0.0    // transform: 0 bot … 1 vehicle; facing; wheel speed; flying parts
+        var shots: [Shot] = [], puffs: [Offset] = [], flash = 0.0, flashY = 0.0, flashSide = -1.0, slowmo = false   // dodge
         var driveVx: Double? = nil   // when set, the engine pushes the body sideways this many radii per second
         var say: String? = nil
         var done = false
@@ -992,6 +1000,7 @@ extension Critter {
         case .snack: return 10.0; case .pat: return 3.6; case .chin: return 3.6; case .skateboard: return 6.0; case .kite: return 8.5
         case .toilet: return 9.0; case .pingpong: return 7.4; case .meadow: return 9.5
         case .bulb: return 6.5; case .catWalk: return 7.0; case .catPlay: return 10.0; case .football: return 7.8
+        case .transform: return 8.6; case .dodge: return 8.2
         case .inflate: return 7.2; case .lightning: return 5.6; case .rainUmbrella, .rain: return 6.5; case .balloon: return 7.5; case .manhole: return 7.6; case .sneeze: return 2.6; case .hiccup: return 2.4
         case .eat: return 5.0; case .read: return 12.0; case .heartEyes: return 2.6
         case .eyePop: return 2.6; case .tornado: return 4.2; case .pancake: return 6.8; case .rubber: return 5.0; case .dash: return 3.6
@@ -1285,6 +1294,84 @@ extension Critter {
             else if t < 7.0 { f.driveVx = 4.5; f.catRel = -2.6; f.catDir = 1; f.mood = .dizzy; if at(4.4) { f.pop = true } }
             else if t < 8.6 { f.catRel = -2.8; f.catDir = 1; f.catSit = true; f.catMeow = t >= 7.4 && t < 8.4; f.mood = .dizzy; if at(7.0) { f.say = "@_@" } }
             else { f.catRel = -2.8; f.catDir = 1; f.catSit = true; f.mood = .happy; if at(8.6) { f.say = "สนุกดี~" } }
+        case .transform:
+            // Parts fly out and lock into a vehicle around a smaller body (the cabin), it drives across and back, then folds up.
+            let lo = 0.12, hi = 0.88
+            if t < 0.7 { f.mood = .wow; f.xFrac = from; if at(0.1) { f.say = "ทรานส์ฟอร์ม!" }; if at(0.45) { f.hopNow = 160 } }
+            else if t < 1.7 { let q = ease((t - 0.7) / 1.0); f.car = q; f.mech = 1 - abs(q * 2 - 1); f.xFrac = from; f.mood = .happy }
+            else if t < 6.5 {
+                f.car = 1; f.mood = .happy
+                // There and back: to one side, a U-turn, across to the other side, a U-turn, back to the middle.
+                let p = (t - 1.7) / 4.8
+                let first = from < 0.5 ? hi : lo, second = from < 0.5 ? lo : hi
+                func leg(_ a: Double, _ b: Double, _ q: Double) -> Double { a + (b - a) * ease(q) }
+                let x: Double, v: Double
+                if p < 0.32 { x = leg(from, first, p / 0.32); v = first - from }
+                else if p < 0.40 { x = first; v = 0 }
+                else if p < 0.78 { x = leg(first, second, (p - 0.40) / 0.38); v = second - first }
+                else if p < 0.86 { x = second; v = 0 }
+                else { x = leg(second, 0.5, (p - 0.86) / 0.14); v = 0.5 - second }
+                f.xFrac = x
+                f.carDir = p < 0.36 ? (first > from ? 1 : -1) : p < 0.82 ? (second > first ? 1 : -1) : (0.5 > second ? 1 : -1)
+                f.carSpeed = v == 0 ? 0 : 1
+                if at(2.0) { f.say = "บรื้นน~" }; if at(4.0) { f.say = "ปี๊น ปี๊น!" }
+            }
+            else if t < 7.5 { let q = ease((t - 6.5) / 1.0); f.car = 1 - q; f.mech = 1 - abs(q * 2 - 1); f.xFrac = 0.5; f.mood = .happy; if at(6.5) { f.say = "กลับร่าง!" } }
+            else { f.mood = .happy; if at(7.5) { f.hopNow = 200 } }
+            f.lift = f.car > 0.001 ? 0.62 * f.car : nil   // the shrunken body rides high enough that its eyes clear the car body
+            f.scale = 1 - 0.38 * f.car
+        case .dodge:
+            // Three volleys from one side, each dodged a different way; the order changes every time.
+            let dir: Double = (seed % 2 == 0) ? 1 : -1                 // +1: fired from the left, flying right
+            let orders = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]]
+            let order = orders[(seed / 2) % orders.count]
+            let edge = dir > 0 ? -0.2 : 1.2
+            f.flashSide = -dir
+            var bx = min(0.8, max(0.2, from))
+            if t < 1.0 { f.mood = .worried; if at(0.3) { f.say = "…?" } }
+            for (i, kind) in order.enumerated() {
+                let start = 1.0 + Double(i) * 2.2, tau = t - start
+                // The roll always goes away from that volley's shooter (never back under the bullets' path),
+                // so the aimed volley comes from the side with less room.
+                let rollDir: Double = bx < 0.5 ? 1 : -1
+                let rollTo = bx + rollDir * 0.32
+                if tau >= 0 && tau < 2.2 {
+                    switch kind {
+                    case 0:   // low bullets: jump over them
+                        let speed = 1.4, hitAt = 0.25 + abs(bx - edge) / speed
+                        for k in 0..<3 { let q = tau - 0.25 - Double(k) * 0.1; if q > 0 { let x = edge + dir * speed * q; if x > -0.3 && x < 1.3 { f.shots.append(Shot(x: x, y: 0.32, heading: dir > 0 ? 0 : .pi)) } } }
+                        f.mood = tau < hitAt - 0.3 ? .startled : .happy
+                        if at(start + hitAt - 0.42) { f.hopNow = 480; f.say = "โดด!" }
+                        if tau < 0.45 { f.flash = max(0, 1 - (tau - 0.25) / 0.2) * (tau >= 0.25 ? 1 : 0); f.flashY = 0.32 }
+                    case 1:   // aimed at where it stands: roll away, the bullets hit the floor behind it
+                        let sx = rollDir > 0 ? -0.2 : 1.2, sy = 4.2
+                        f.flashSide = -rollDir
+                        for k in 0..<3 {
+                            let arrive = 0.95 + Double(k) * 0.14, fly = 0.55, q = (tau - (arrive - fly)) / fly
+                            let tx = bx + Double(k - 1) * 0.04
+                            if q > 0 && q < 1 { f.shots.append(Shot(x: sx + (tx - sx) * q, y: sy * (1 - q), heading: atan2(sy, (tx - sx) * 8.8))) }
+                            if q >= 1 && q < 1 + 0.7 / fly { f.puffs.append(Offset(x: tx, y: (q - 1) * fly / 0.7)) }
+                        }
+                        if tau < 0.5 { f.xFrac = bx; f.mood = .startled; if at(start + 0.2) { f.say = "!!" } }
+                        else if tau < 1.0 { let q = ease((tau - 0.5) / 0.5); f.xFrac = bx + (rollTo - bx) * q; f.spinDeg = 360 * q * (rollTo > bx ? 1 : -1); f.mood = .dizzy; if at(start + 0.5) { f.say = "กลิ้ง!" } }
+                        else { f.xFrac = rollTo; f.mood = .happy }
+                        if tau >= 0.4 && tau < 0.75 { f.flash = 1 - abs(tau - 0.55) / 0.2; f.flashY = 4.2 }
+                    default:  // head-high and slow: bullet time, duck and lean back
+                        let speed = 0.42, hitAt = 0.2 + abs(bx - edge) / speed
+                        f.slowmo = tau > 0.2 && tau < 2.1
+                        for k in 0..<2 { let q = tau - 0.2 - Double(k) * 0.35; if q > 0 { let x = edge + dir * speed * q; if x > -0.3 && x < 1.3 { f.shots.append(Shot(x: x, y: 1.6, heading: dir > 0 ? 0 : .pi, trail: 2.6)) } } }
+                        let duck = ease(min(1, max(0, (tau - (hitAt - 0.9)) / 0.5))) * (1 - ease(min(1, max(0, (tau - (hitAt + 0.9)) / 0.4))))
+                        f.flat = 0.42 * duck; f.spinDeg = dir * 28 * duck
+                        f.mood = duck > 0.3 ? .zen : .worried
+                        if at(start + 0.3) { f.say = "สโลว์โมชั่น…" }
+                        if tau < 0.4 { f.flash = max(0, 1 - (tau - 0.2) / 0.2) * (tau >= 0.2 ? 1 : 0); f.flashY = 1.6 }
+                    }
+                    if f.xFrac == nil { f.xFrac = bx }
+                }
+                if kind == 1 && tau >= 1.0 { bx = rollTo }
+            }
+            if t >= 7.6 { f.xFrac = bx; f.mood = .happy; if at(7.6) { f.say = "รอดดด!"; f.hopNow = 220 } }
+            else if t < 1.0 { f.xFrac = bx }
         case .football:
             // A boot kicks it away from us, deep into the screen, toward a far-off goal. Half the time it goes in.
             let scores = ((seed / 4) % 2) == 0
@@ -1413,10 +1500,13 @@ extension Critter {
 extension Critter.Scheduler {
     static let sceneGap: [(Double, Double)] = [(480, 900), (90, 180), (40, 90)]   // quiet / normal / playful — the user found 5–10 min "almost never"
     static let sceneWeights: [(Critter.Scene, Double)] = [(.inflate, 3), (.lightning, 3), (.rainUmbrella, 4), (.rain, 3), (.balloon, 4), (.manhole, 4), (.sneeze, 8), (.hiccup, 8),
-                                                            (.spinJump, 6), (.levitate, 3), (.ghost, 3), (.shootingStar, 3), (.box, 3), (.melt, 2), (.freeze, 2), (.flood, 2), (.plane, 2), (.dance, 4), (.ninja, 3), (.roadkill, 2), (.clone, 3), (.beach, 2), (.crush, 3), (.skateboard, 4), (.kite, 3), (.toilet, 2), (.pingpong, 3), (.meadow, 4), (.bulb, 3), (.catWalk, 4), (.catPlay, 3), (.football, 4)]
+                                                            (.spinJump, 6), (.levitate, 3), (.ghost, 3), (.shootingStar, 3), (.box, 3), (.melt, 2), (.freeze, 2), (.flood, 2), (.plane, 2), (.dance, 4), (.ninja, 3), (.roadkill, 2), (.clone, 3), (.beach, 2), (.crush, 3), (.skateboard, 4), (.kite, 3), (.toilet, 2), (.pingpong, 3), (.meadow, 4), (.bulb, 3), (.catWalk, 4), (.catPlay, 3), (.football, 4), (.transform, 2), (.dodge, 3)]
     static let cartoonWeights: [(Critter.Scene, Double)] = [(.eyePop, 8), (.tornado, 5), (.pancake, 5), (.rubber, 6), (.dash, 6)]
     func nextSceneDelay(_ roll: Double) -> Double { let g = Critter.Scheduler.sceneGap[max(0, min(2, playfulness))]; return (g.0 + (g.1 - g.0) * roll) * (cartoon ? 0.6 : 1) }
-    func pickScene(_ roll: Double) -> Critter.Scene { Critter.Scheduler.weighted(cartoon ? Critter.Scheduler.sceneWeights + Critter.Scheduler.cartoonWeights : Critter.Scheduler.sceneWeights, roll) }
+    static let costumeWeights: [(Critter.Scene, Double)] = [(.transform, 9), (.dodge, 5)]
+    func pickScene(_ roll: Double) -> Critter.Scene {
+        Critter.Scheduler.weighted(Critter.Scheduler.sceneWeights + (cartoon ? Critter.Scheduler.cartoonWeights : []) + (costumed ? Critter.Scheduler.costumeWeights : []), roll)
+    }
     // Weather: a background state that lasts minutes; clear is the common case.
     static let weatherWeights: [(Critter.Weather, Double)] = [(.clear, 40), (.sunny, 14), (.rain, 12), (.wind, 10), (.snow, 8), (.heat, 8)]
     static let weatherLength: (Double, Double) = (180, 480)

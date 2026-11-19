@@ -69,6 +69,7 @@ final class CritterEngine: ObservableObject {
         guard c != costume else { return }
         let old = costume
         costume = c
+        scheduler.costumed = c != .none
         if c != .none { drawnCostume = c; if old != .none { costumeT = 0 } }
         if !announce || reduceMotion {
             costumeT = c == .none ? 0 : 1
@@ -461,6 +462,7 @@ final class CritterEngine: ObservableObject {
     }
     /// Deterministic review uses the live engine's step, not a separate animation implementation.
     func reviewStep(dt: Double = 1.0 / 30) { tick(dt: dt) }
+    func reviewSetSceneSeed(_ seed: Int) { sceneSeed = seed }
     func reviewBlink() { blinkDuration = 0.24; blinkUntil = clock + blinkDuration }
     /// Offscreen review: put the character in a state and let the face settle without a screen.
     func settle(mood m: Critter.Mood, external e: External = .idle, z: Double = 0, level lv: Double = 0, bubbleText: String? = nil, steps: Int = 90) {
@@ -624,6 +626,7 @@ enum CritterPainter {
         if let cx = sc.carX { drawCar(s, x: cx, in: &ctx) }
         if sc.clones > 0.01 { drawClones(s, amount: sc.clones, vanish: sc.cloneVanish, chosen: sc.chosen, in: &ctx) }
         if sc.girl > 0.01 { drawGirl(s, amount: sc.girl, in: &ctx) }
+        if !sc.shots.isEmpty || !sc.puffs.isEmpty || sc.flash > 0.01 { drawShots(s, in: &ctx) }
         defer {
             if sc.room > 0.01 { drawRestroom(s, presence: sc.room, lift: sc.roomLift, in: &ctx) }
             if sc.inNet { drawNetFront(s, netHit: sc.netHit, t: t, in: &ctx) }
@@ -635,6 +638,7 @@ enum CritterPainter {
                 drawCatPaw(s, x: cx, dir: sc.catDir, paw: sc.catPaw, in: &ctx)
             }
             if sc.water > 0.01 { drawWater(s, level: sc.water, in: &ctx) }
+            if sc.car > 0.001 { drawVehicle(s, in: &ctx) }   // in front of the shrunken body, which becomes the cabin
         }
         if s.burstAge >= 0 && s.burstAge < 0.45 { drawBurst(at: s.center, radius: s.drawRadius * 2.3, age: s.burstAge, unit: s.unit, in: &ctx) }
         if sc.hidden && sc.smokeCloud < 0.01 && sc.door < 0.01 { return }
@@ -936,6 +940,128 @@ enum CritterPainter {
             h.stroke(trim, with: .color(silver), style: StrokeStyle(lineWidth: 2.4, lineCap: .round))
             var sheen = h; sheen.translateBy(x: mx - 18, y: -37); sheen.rotate(by: .degrees(-22))
             sheen.fill(Path(ellipseIn: CGRect(x: -9, y: -3, width: 18, height: 6)), with: .color(.white.opacity(0.45)))
+        }
+    }
+
+    // MARK: transform and dodge (world space)
+    /// The vehicle the character turns into, in front of its shrunken body. It differs per costume:
+    /// a black kart (no costume), a yellow sports car (bee), a blue truck (leader). Facing follows `carDir`.
+    static func drawVehicle(_ s: CritterEngine.Snapshot, in ctx: inout GraphicsContext) {
+        guard let sc = s.scene else { return }
+        let m = max(0, min(1, sc.car)), u = s.drawRadius / 46
+        var g = ctx
+        g.translateBy(x: s.center.x, y: s.groundY); g.scaleBy(x: u * sc.carDir, y: u)
+        let kind = s.costume
+        let (main, deep, trim): (Color, Color, Color) = kind == .bee ? (beeYellow, beeYellowDeep, beeBlack) : kind == .prime ? (primeBlue, primeBlueDeep, silver) : (Color(white: 0.16), ink, led)
+        // Parts flying in (or out) while the shape changes.
+        if sc.mech > 0.01 {
+            for i in 0..<7 {
+                let a = Double(i) / 7 * 2 * .pi + s.t * 3, r = 34 + 46 * sc.mech
+                var part = g; part.translateBy(x: cos(a) * r, y: -40 + sin(a) * r * 0.6); part.rotate(by: .radians(a * 2 + s.t * 9))
+                part.fill(Path(roundedRect: CGRect(x: -7, y: -4, width: 14, height: 8), cornerRadius: 2), with: .color(i % 3 == 0 ? trim : main))
+                part.stroke(Path(roundedRect: CGRect(x: -7, y: -4, width: 14, height: 8), cornerRadius: 2), with: .color(ink.opacity(0.7)), lineWidth: 1)
+            }
+        }
+        var v = g; v.scaleBy(x: m, y: m); v.opacity = min(1, m * 1.6)
+        let spin = s.still ? 0.6 : s.t * (sc.carSpeed > 0 ? 16 : 1)
+        func wheel(_ x: Double, _ r: Double) {
+            v.fill(Path(ellipseIn: CGRect(x: x - r, y: -r, width: 2 * r, height: 2 * r)), with: .color(Color(white: 0.08)))
+            v.fill(Path(ellipseIn: CGRect(x: x - r * 0.5, y: -r * 0.5, width: r, height: r)), with: .color(Color(white: 0.7)))
+            var sp = Path(); sp.move(to: CGPoint(x: x + cos(spin) * r * 0.45, y: sin(spin) * r * 0.45 - 0.0)); sp.addLine(to: CGPoint(x: x - cos(spin) * r * 0.45, y: -sin(spin) * r * 0.45))
+            v.stroke(sp, with: .color(Color(white: 0.3)), lineWidth: 2)
+        }
+        // Exhaust puffs trailing behind while it drives.
+        if sc.carSpeed > 0 && m > 0.9 && !s.still {
+            for i in 0..<3 {
+                let q = (s.t * 2.2 + Double(i) / 3).truncatingRemainder(dividingBy: 1)
+                let r = 4 + 9 * q
+                v.fill(Path(ellipseIn: CGRect(x: -70 - q * 34 - r, y: -16 - q * 10 - r, width: 2 * r, height: 2 * r)), with: .color(Color(white: 0.6).opacity(0.45 * (1 - q))))
+            }
+        }
+        // Headlight beam while it drives.
+        if sc.carSpeed > 0 && m > 0.9 {
+            var beam = Path(); beam.move(to: CGPoint(x: 66, y: -26)); beam.addLine(to: CGPoint(x: 120, y: -44)); beam.addLine(to: CGPoint(x: 120, y: -6)); beam.closeSubpath()
+            v.fill(beam, with: .linearGradient(Gradient(colors: [Color(red: 1, green: 0.96, blue: 0.75).opacity(0.45), .clear]), startPoint: CGPoint(x: 66, y: -26), endPoint: CGPoint(x: 120, y: -26)))
+        }
+        switch kind {
+        case .prime:
+            // Truck: long hood with a silver grille, chrome bumper, two exhaust stacks behind the cab.
+            for x in [-44.0, -36.0] {
+                v.fill(Path(roundedRect: CGRect(x: x - 3, y: -88, width: 6, height: 56), cornerRadius: 3), with: .linearGradient(Gradient(colors: [.white, silver, silverDeep]), startPoint: CGPoint(x: x - 3, y: 0), endPoint: CGPoint(x: x + 3, y: 0)))
+            }
+            let cab = Path(roundedRect: CGRect(x: -60, y: -36, width: 82, height: 26), cornerRadius: 6)
+            v.fill(cab, with: .linearGradient(Gradient(colors: [main, deep]), startPoint: CGPoint(x: 0, y: -36), endPoint: CGPoint(x: 0, y: -10)))
+            v.stroke(cab, with: .color(primeBlueDeep), lineWidth: 1.6)
+            let hood = Path(roundedRect: CGRect(x: 14, y: -50, width: 58, height: 40), cornerRadius: 7)
+            v.fill(hood, with: .linearGradient(Gradient(colors: [main, deep]), startPoint: CGPoint(x: 0, y: -50), endPoint: CGPoint(x: 0, y: -10)))
+            v.stroke(hood, with: .color(primeBlueDeep), lineWidth: 1.6)
+            v.fill(Path(roundedRect: CGRect(x: 62, y: -46, width: 12, height: 30), cornerRadius: 3), with: .color(silver))
+            for i in 0..<4 { var bar = Path(); let x = 64.5 + Double(i) * 2.6; bar.move(to: CGPoint(x: x, y: -43)); bar.addLine(to: CGPoint(x: x, y: -19)); v.stroke(bar, with: .color(silverDeep), lineWidth: 1.2) }
+            v.fill(Path(ellipseIn: CGRect(x: 64, y: -52, width: 9, height: 6)), with: .color(Color(red: 1, green: 0.95, blue: 0.7)))
+            v.fill(Path(roundedRect: CGRect(x: -64, y: -14, width: 142, height: 6), cornerRadius: 3), with: .color(silver))
+            v.fill(Path(roundedRect: CGRect(x: -24, y: -20, width: 30, height: 9), cornerRadius: 4.5), with: .color(silverDeep))   // fuel tank
+            wheel(-46, 15); wheel(-24, 15); wheel(48, 15)
+        case .bee:
+            // Sports car: low wedge, two black racing stripes, rear spoiler.
+            var body = Path()
+            body.move(to: CGPoint(x: -66, y: -12)); body.addLine(to: CGPoint(x: -66, y: -30)); body.addQuadCurve(to: CGPoint(x: -26, y: -34), control: CGPoint(x: -50, y: -36))
+            body.addLine(to: CGPoint(x: 30, y: -32)); body.addQuadCurve(to: CGPoint(x: 70, y: -20), control: CGPoint(x: 62, y: -30))
+            body.addLine(to: CGPoint(x: 72, y: -12)); body.addQuadCurve(to: CGPoint(x: -66, y: -12), control: CGPoint(x: 0, y: -6)); body.closeSubpath()
+            v.fill(body, with: .linearGradient(Gradient(colors: [main, deep]), startPoint: CGPoint(x: 0, y: -34), endPoint: CGPoint(x: 0, y: -8)))
+            v.stroke(body, with: .color(trim), lineWidth: 1.6)
+            for y in [-29.0, -24.0] { var st = Path(); st.move(to: CGPoint(x: -62, y: y)); st.addLine(to: CGPoint(x: 64, y: y + 4)); v.stroke(st, with: .color(trim), lineWidth: 2.6) }
+            v.fill(Path(roundedRect: CGRect(x: -62, y: -40, width: 4, height: 10), cornerRadius: 1), with: .color(trim))
+            v.fill(Path(roundedRect: CGRect(x: -72, y: -44, width: 24, height: 5), cornerRadius: 2), with: .color(trim))
+            v.fill(Path(ellipseIn: CGRect(x: 62, y: -25, width: 9, height: 6)), with: .color(Color(red: 1, green: 0.98, blue: 0.8)))
+            v.fill(Path(ellipseIn: CGRect(x: -68, y: -27, width: 6, height: 5)), with: .color(Color(red: 0.9, green: 0.15, blue: 0.15)))
+            wheel(-40, 13); wheel(44, 13)
+        case .none:
+            // Kart: black shell with a cyan LED strip, like the eyes.
+            let shell = Path(roundedRect: CGRect(x: -62, y: -34, width: 128, height: 24), cornerRadius: 11)
+            v.fill(shell, with: .linearGradient(Gradient(colors: [main, deep]), startPoint: CGPoint(x: 0, y: -34), endPoint: CGPoint(x: 0, y: -10)))
+            v.stroke(shell, with: .color(.white.opacity(0.2)), lineWidth: 1.2)
+            var strip = Path(); strip.move(to: CGPoint(x: -54, y: -22)); strip.addLine(to: CGPoint(x: 58, y: -22))
+            v.stroke(strip, with: .color(trim), style: StrokeStyle(lineWidth: 2.4, lineCap: .round, dash: [3, 2]))
+            v.fill(Path(ellipseIn: CGRect(x: 58, y: -30, width: 9, height: 6)), with: .color(trim))
+            v.fill(Path(ellipseIn: CGRect(x: -64, y: -29, width: 6, height: 5)), with: .color(Color(red: 0.9, green: 0.15, blue: 0.15)))
+            wheel(-40, 13); wheel(42, 13)
+        }
+    }
+    /// Cartoon bullets with streaks, dust where they hit the floor, and the muzzle flash at the edge they come from.
+    /// Panel x for a 0…1 position on the body's travel range (the scale of `xFrac`).
+    static func travelX(_ s: CritterEngine.Snapshot, _ frac: Double) -> Double { s.area.minX + s.drawRadius + (s.area.width - 2 * s.drawRadius) * frac }
+    static func drawShots(_ s: CritterEngine.Snapshot, in ctx: inout GraphicsContext) {
+        guard let sc = s.scene else { return }
+        let R = s.drawRadius, u = R / 46
+        if sc.flash > 0.01 {
+            let x = sc.flashSide < 0 ? s.area.minX - 2 : s.area.maxX + 2, y = s.groundY - sc.flashY * R
+            var star = Path()
+            for j in 0..<12 { let a = Double(j) * .pi / 6, r = (j % 2 == 0 ? 20.0 : 8.0) * u * (0.6 + 0.4 * sc.flash); let p = CGPoint(x: x + cos(a) * r, y: y + sin(a) * r); j == 0 ? star.move(to: p) : star.addLine(to: p) }
+            star.closeSubpath()
+            ctx.fill(star, with: .color(Color(red: 1, green: 0.78, blue: 0.2).opacity(sc.flash)))
+            ctx.fill(Path(ellipseIn: CGRect(x: x - 6 * u, y: y - 6 * u, width: 12 * u, height: 12 * u)), with: .color(.white.opacity(sc.flash)))
+        }
+        for shot in sc.shots {
+            var g = ctx
+            g.translateBy(x: travelX(s, shot.x), y: s.groundY - shot.y * R)
+            g.rotate(by: .radians(shot.heading)); g.scaleBy(x: u, y: u)
+            let len = 46 * shot.trail
+            g.fill(Path(roundedRect: CGRect(x: -12 - len, y: -2.5, width: len, height: 5), cornerRadius: 2.5),
+                   with: .linearGradient(Gradient(colors: [.clear, Color(white: 0.6).opacity(0.7)]), startPoint: CGPoint(x: -12 - len, y: 0), endPoint: CGPoint(x: -12, y: 0)))
+            if sc.slowmo {
+                for k in 0..<3 { let x = -18 - Double(k) * 15; g.stroke(Path(ellipseIn: CGRect(x: x - 3, y: -9 - Double(k) * 2, width: 6, height: 18 + Double(k) * 4)), with: .color(.white.opacity(0.45 - Double(k) * 0.12)), lineWidth: 1.2) }
+            }
+            g.fill(Path(roundedRect: CGRect(x: -12, y: -4.5, width: 14, height: 9), cornerRadius: 1.5),
+                   with: .linearGradient(Gradient(colors: [Color(red: 0.98, green: 0.82, blue: 0.42), Color(red: 0.72, green: 0.52, blue: 0.16)]), startPoint: CGPoint(x: 0, y: -4.5), endPoint: CGPoint(x: 0, y: 4.5)))
+            var tip = Path(); tip.move(to: CGPoint(x: 2, y: -4.5)); tip.addQuadCurve(to: CGPoint(x: 13, y: 0), control: CGPoint(x: 10, y: -4.5)); tip.addQuadCurve(to: CGPoint(x: 2, y: 4.5), control: CGPoint(x: 10, y: 4.5)); tip.closeSubpath()
+            g.fill(tip, with: .color(Color(red: 0.78, green: 0.45, blue: 0.25)))
+        }
+        for p in sc.puffs {
+            let x = travelX(s, p.x), age = p.y
+            for (i, dx) in [-1.0, 0.0, 1.0].enumerated() {
+                let r = (5 + 13 * age) * u * (i == 1 ? 1.2 : 0.9)
+                ctx.fill(Path(ellipseIn: CGRect(x: x + dx * 9 * u * (0.5 + age) - r, y: s.groundY - r - 4 * u - age * 10 * u * (i == 1 ? 1.4 : 1), width: 2 * r, height: 2 * r)), with: .color(Color(white: 0.62).opacity((1 - age) * 0.6)))
+            }
         }
     }
 
@@ -2091,10 +2217,11 @@ struct CritterPlayground: View {
         ("ร่างกาย", [.inflate, .sneeze, .hiccup, .lightning, .melt, .freeze]),
         ("ธรรมชาติ", [.rainUmbrella, .rain, .balloon, .shootingStar, .kite, .beach]),
         ("ผจญภัย", [.manhole, .plane, .flood, .roadkill, .box, .ninja, .clone, .skateboard, .toilet, .pingpong, .meadow, .football]),
+        ("หุ่นยนต์แปลงร่าง", [.transform, .dodge]),
         ("อารมณ์และเพื่อน", [.spinJump, .levitate, .ghost, .dance, .crush, .catWalk, .catPlay, .eat, .snack, .read, .heartEyes, .pat, .chin]),
         ("มุกการ์ตูน", [.eyePop, .tornado, .pancake, .rubber, .dash, .bulb])]
     static func sceneName(_ s: Critter.Scene) -> String { (sceneNames + gagNames).first { $0.0 == s }?.1 ?? s.rawValue }
-    static let sceneNames: [(Critter.Scene, String)] = [(.inflate, "พองจนระเบิด แล้วเกิดใหม่"), (.lightning, "ฟ้าผ่า"), (.rainUmbrella, "ฝนตก มีร่ม"), (.rain, "ฝนตก ไม่มีร่ม"), (.balloon, "ลูกโป่งลอย"), (.manhole, "เปิดฝาท่อ โดดลงไป"), (.sneeze, "จาม น้ำมูกไหล"), (.hiccup, "สะอึก"), (.spinJump, "กระโดดหมุนตัว"), (.levitate, "นั่งสมาธิลอย"), (.ghost, "ผีโผล่หลอก"), (.shootingStar, "ดาวตก ขอพร"), (.box, "ซ่อนในกล่อง"), (.melt, "ร้อนจนละลาย"), (.freeze, "แข็งเป็นน้ำแข็ง"), (.flood, "น้ำท่วม ว่ายขึ้นฝั่ง"), (.plane, "ขึ้นเครื่องบิน โดดลงมา"), (.dance, "เต้นบนฟลอร์"), (.ninja, "ระเบิดควันนินจา หายตัว"), (.roadkill, "ข้ามถนน โดนรถทับ วิญญาณลอย"), (.clone, "แยกร่าง 4 ตัว"), (.beach, "หาดทราย นอนอาบแดด"), (.crush, "เจอสาว gluu bot แล้วเขิน"), (.snack, "ถุงขนม กินแล้วอ้วน"), (.pat, "ลูบหัว"), (.chin, "เกาคาง"), (.skateboard, "สเก็ตบอร์ด คิกฟลิป"), (.kite, "เล่นว่าว"), (.toilet, "เข้าห้องน้ำ โดนรถยกเปิด"), (.pingpong, "โดนตีปิงปอง"), (.meadow, "กลิ้งบนทุ่งหญ้า ช้าและเร็ว"), (.bulb, "โดนเปิดสวิตช์ กลายเป็นหลอดไฟ"), (.catWalk, "แมวส้มเดินผ่าน"), (.catPlay, "แมวเล่นด้วยเหมือนลูกบอล"), (.football, "โดนเตะพุ่งไปประตูไกล ๆ (สุ่มเข้า/ไม่เข้า)"), (.eat, "กินข้าว"), (.read, "อ่านหนังสือ"), (.heartEyes, "ตาเป็นหัวใจ")]
+    static let sceneNames: [(Critter.Scene, String)] = [(.inflate, "พองจนระเบิด แล้วเกิดใหม่"), (.lightning, "ฟ้าผ่า"), (.rainUmbrella, "ฝนตก มีร่ม"), (.rain, "ฝนตก ไม่มีร่ม"), (.balloon, "ลูกโป่งลอย"), (.manhole, "เปิดฝาท่อ โดดลงไป"), (.sneeze, "จาม น้ำมูกไหล"), (.hiccup, "สะอึก"), (.spinJump, "กระโดดหมุนตัว"), (.levitate, "นั่งสมาธิลอย"), (.ghost, "ผีโผล่หลอก"), (.shootingStar, "ดาวตก ขอพร"), (.box, "ซ่อนในกล่อง"), (.melt, "ร้อนจนละลาย"), (.freeze, "แข็งเป็นน้ำแข็ง"), (.flood, "น้ำท่วม ว่ายขึ้นฝั่ง"), (.plane, "ขึ้นเครื่องบิน โดดลงมา"), (.dance, "เต้นบนฟลอร์"), (.ninja, "ระเบิดควันนินจา หายตัว"), (.roadkill, "ข้ามถนน โดนรถทับ วิญญาณลอย"), (.clone, "แยกร่าง 4 ตัว"), (.beach, "หาดทราย นอนอาบแดด"), (.crush, "เจอสาว gluu bot แล้วเขิน"), (.snack, "ถุงขนม กินแล้วอ้วน"), (.pat, "ลูบหัว"), (.chin, "เกาคาง"), (.skateboard, "สเก็ตบอร์ด คิกฟลิป"), (.kite, "เล่นว่าว"), (.toilet, "เข้าห้องน้ำ โดนรถยกเปิด"), (.pingpong, "โดนตีปิงปอง"), (.meadow, "กลิ้งบนทุ่งหญ้า ช้าและเร็ว"), (.bulb, "โดนเปิดสวิตช์ กลายเป็นหลอดไฟ"), (.catWalk, "แมวส้มเดินผ่าน"), (.catPlay, "แมวเล่นด้วยเหมือนลูกบอล"), (.football, "โดนเตะพุ่งไปประตูไกล ๆ (สุ่มเข้า/ไม่เข้า)"), (.transform, "แปลงร่างเป็นรถ (รถตามชุดที่ใส่)"), (.dodge, "หลบกระสุน (โดด / กลิ้ง / สโลว์โมชั่น สลับลำดับ)"), (.eat, "กินข้าว"), (.read, "อ่านหนังสือ"), (.heartEyes, "ตาเป็นหัวใจ")]
     static let gagNames: [(Critter.Scene, String)] = [(.eyePop, "ตาถลนพุ่งออก (Gear 5)"), (.tornado, "หมุนติ้วทอร์นาโด"), (.pancake, "ทั่งตกใส่ แบนแต๊ดแต๋"), (.rubber, "ตัวยางยืด (Nika)"), (.dash, "วิ่งหายวูบ บี๊บบี๊บ")]
     static let weatherNames: [(Critter.Weather, String)] = Critter.Weather.allCases.map { ($0, Critter.weatherNames[$0] ?? $0.rawValue) }
     private let moodNames: [Critter.Mood: String] = [.normal: "ปกติ", .bored: "เบื่อ", .thinking: "คิด", .sleepy: "ง่วง", .asleep: "หลับ", .curious: "สงสัย", .happy: "ดีใจ", .done: "เสร็จ", .shy: "เขิน", .sad: "เศร้า", .wow: "ว้าว", .startled: "ตกใจ", .worried: "กังวล", .dizzy: "เวียนหัว", .peek: "ยืดมอง", .cold: "สั่น", .listening: "ฟัง", .annoyed: "หงุดหงิด", .bye: "บอกลา", .back: "กลับมา", .hungry: "หิว", .sulky: "งอน", .loved: "รัก", .laugh: "หัวเราะ", .full: "อิ่ม", .hot: "ร้อน", .zen: "สงบ", .pant: "หอบ", .groove: "เต้น"]

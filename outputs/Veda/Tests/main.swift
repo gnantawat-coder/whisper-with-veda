@@ -357,7 +357,7 @@ do {
     check(Critter.allowsBubble(.language, quiet: true) && Critter.allowsBubble(.thinking, quiet: true) && !Critter.allowsBubble(.mood, quiet: true) && !Critter.allowsBubble(.scene, quiet: true) && Critter.allowsBubble(.mood, quiet: false), "quiet mode keeps only state-change bubbles")
     let sch = Critter.Scheduler(playfulness: 1)
     check(sch.nextSceneDelay(0) == 90 && Critter.Scheduler(playfulness: 0).nextSceneDelay(1) == 900 && Critter.Scheduler(playfulness: 2).nextSceneDelay(0) == 40, "scenes are 1.5–3 min apart normally, rarer when quiet, under 1.5 min when playful")
-    check(sch.pickScene(0) == .inflate && sch.pickScene(0.999) == .football, "scene picks span the table")
+    check(sch.pickScene(0) == .inflate && sch.pickScene(0.999) == .dodge, "scene picks span the table")
     let fbG = { (t: Double) in Critter.sceneFrame(.football, t: t, seed: 0, from: 0.3) }, fbM = { (t: Double) in Critter.sceneFrame(.football, t: t, seed: 4, from: 0.3) }
     check(fbG(1.1).bootSwing > 0.3 && fbG(1.25 + 1.0 / 120).pop && fbG(1.25 + 1.0 / 120).say == "โอ้ย!!" && fbG(2.0).xFrac! > 0.5 && (fbG(2.0).lift ?? 0) > 1.5 && (fbG(2.0).depth ?? 0) > 0.4 && (fbG(2.0).depth ?? 0) < 0.6, "the boot swings, it yells, and flies deep toward the far goal")
     check(fbG(3.2).scoreText == "GOAL!!" && fbG(3.2).confetti == 1 && fbG(4.0).mood == .happy && fbG(3.2).netHit > 0 && fbG(4.0).depth == 1 && fbG(4.0).inNet && !fbG(7.0).inNet && fbG(7.7).depth! < 0.1, "seed 0 scores far away: confetti, net wobble, joy, then rolls back to us")
@@ -593,3 +593,34 @@ do {
     check(Critter.Costume.allCases.allSatisfy { !$0.short.isEmpty && $0.short.count <= 9 }, "menu labels stay short enough for the capsule menu")
 }
 print("Second costume checks passed; total \(checks)")
+do {
+    // Transform and dodge.
+    var plain = Critter.Scheduler(playfulness: 1), dressed = plain; dressed.costumed = true
+    let rolls = stride(from: 0.0, to: 1.0, by: 0.001)
+    let plainShare = Double(rolls.filter { plain.pickScene($0) == .transform }.count), dressedShare = Double(rolls.filter { dressed.pickScene($0) == .transform }.count)
+    check(plainShare > 0 && dressedShare > plainShare * 3, "transform comes up far more often while wearing a costume")
+    let d = Critter.sceneDuration(.transform)
+    let frames = stride(from: 0.0, through: d, by: 1.0 / 60).map { Critter.sceneFrame(.transform, t: $0, seed: 0, from: 0.3) }
+    check(frames.contains { $0.car == 1 } && frames.first!.car == 0 && frames.last!.car == 0, "transform becomes a vehicle and folds back")
+    let driving = frames.filter { $0.car == 1 }.compactMap { $0.xFrac }
+    check((driving.max() ?? 0) > 0.85 && (driving.min() ?? 1) < 0.15, "the vehicle drives to both sides of the area")
+    check(Set(frames.filter { $0.carSpeed > 0 }.map { $0.carDir }) == [1, -1], "the vehicle turns around")
+    check(frames.allSatisfy { $0.xFrac.map { $0 >= 0 && $0 <= 1 } ?? true }, "the vehicle never leaves the area")
+    // Dodge: every seed plays the three ways in some order, and no bullet ever meets the body.
+    var orders = Set<String>()
+    for seed in 0..<12 {
+        let dd = Critter.sceneDuration(.dodge)
+        var kinds: [String] = []
+        var t = 0.0
+        while t <= dd {
+            let f = Critter.sceneFrame(.dodge, t: t, seed: seed, from: 0.5)
+            if let w = f.say, ["โดด!", "กลิ้ง!", "สโลว์โมชั่น…"].contains(w), kinds.last != w { kinds.append(w) }
+            t += 1.0 / 60
+        }
+        orders.insert(kinds.joined(separator: ","))
+        check(Set(kinds).count == 3, "dodge seed \(seed) uses jump, roll and slow motion")
+    }
+    check(orders.count >= 4, "the dodge order changes between runs (\(orders.count) orders over 12 seeds)")
+    check(Critter.sceneFrame(.dodge, t: 8.0, seed: 3).shots.isEmpty, "no bullets left at the end of the dodge")
+}
+print("Transform and dodge checks passed; total \(checks)")

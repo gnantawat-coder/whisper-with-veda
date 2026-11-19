@@ -105,8 +105,11 @@ enum OverlaySnapshots {
                     context.fill(Path(CGRect(x: x, y: y, width: cell.width, height: cell.height)), with: .color(Color(white: light ? 0.9 : 0.2)))
                     var s = sample.1
                     let ground = y + cell.height - 26
-                    s.center = CGPoint(x: x + cell.width / 2, y: ground - s.drawRadius)
+                    // Keep the body's height above the floor (lifts, jumps) and its place on the travel range (bullets, cars).
+                    let rise = s.groundY - s.center.y, old = s.area
+                    let frac = old.width > 2 * s.drawRadius ? (s.center.x - old.minX - s.drawRadius) / (old.width - 2 * s.drawRadius) : 0.5
                     s.groundY = ground; s.area = CGRect(x: x, y: y, width: cell.width, height: cell.height)
+                    s.center = CGPoint(x: old.width > 0 && s.scene != nil ? CritterPainter.travelX(s, frac) : x + cell.width / 2, y: old.width > 0 ? ground - rise : ground - s.drawRadius)
                     CritterPainter.draw(s, in: &context)
                     if let b = sample.2 {
                         context.draw(Text(b).font(.system(size: 11, weight: .medium, design: .monospaced)).foregroundColor(light ? .black : .white), at: CGPoint(x: x + cell.width / 2, y: y + 14))
@@ -161,6 +164,26 @@ enum OverlaySnapshots {
         // Voice sample: the same moments with and without the costume (text only, printed for review).
         for c in [Critter.Costume.bee, .prime] { for m in [Critter.Mood.happy, .sad, .hungry, .bye] { print(c.rawValue, m.rawValue, "→", c.says(m)?.joined(separator: " | ") ?? "-") } }
         for line in ["ฟ้าสวย…", "อร่อย!", "เป่า… ยิ้ง… ฉุบ!"] { for c in [Critter.Costume.bee, .prime] { print(c.rawValue, line, "→", [0.1, 0.4, 0.6, 0.9].map { c.restyle(line, kind: .scene, roll: $0) }.joined(separator: " | ")) } }
+        // Transform (one vehicle per costume) and dodge, stepped in the live engine so jumps and rolls are real.
+        func live(_ scene: Critter.Scene, costume: Critter.Costume, seed: Int, at time: Double, radius: Double) -> CritterEngine.Snapshot {
+            let engine = CritterEngine(radius: radius)
+            engine.paused = true; engine.weatherEnabled = false; engine.eyeTracking = false
+            engine.setCostume(costume, announce: false)
+            engine.perform(scene: scene); engine.reviewSetSceneSeed(seed)
+            for _ in 0..<Int(time * 60) { engine.reviewStep(dt: 1.0 / 60) }
+            return engine.snapshot
+        }
+        for radius in [44.0, 24.0] {
+            var samples: [(String, CritterEngine.Snapshot, String?)] = []
+            for costume in Critter.Costume.allCases {
+                for (label, t) in [("แปลงร่าง", 1.15), ("ขับ", 2.6), ("กลับรถ", 3.6)] { samples.append((costume.short + " · " + label, live(.transform, costume: costume, seed: 0, at: t, radius: radius), nil)) }
+            }
+            // Dodge seed 0 plays jump, roll, slow motion; find the moments from the timeline.
+            for (label, t) in [("ยิง", 1.5), ("โดด", 1.95), ("กลิ้ง", 3.95), ("ลงพื้น", 4.4), ("สโลว์", 6.3), ("รอด", 7.8)] {
+                samples.append(("หลบ · " + label, live(.dodge, costume: .bee, seed: 0, at: t, radius: radius), nil))
+            }
+            try write(sheet(samples, columns: 3, cell: radius > 30 ? CGSize(width: 330, height: 230) : CGSize(width: 300, height: 170)), "transform-dodge-\(Int(radius))")
+        }
         // The click menu's real width against the old fixed hit-test widths (the "can't change costume" bug).
         for (menu, oldWidth) in [(CritterEngine.Menu.root, 268.0), (.costume, 196.0), (.play, 300.0), (.rps, 150.0)] {
             let engine = CritterEngine(); engine.choose(menu)

@@ -7,7 +7,7 @@ Native macOS local dictation app. User communicates in Thai and expects actual i
 - Build: bash outputs/Veda/scripts/build.sh; tests: bash outputs/Veda/scripts/test.sh. Both pin `-target arm64-apple-macos15.0` (LSMinimumSystemVersion 15.0): this Mac runs macOS 27.0 while the installed SDK defaults to macosx28.0, and an unpinned binary (minos 28) is refused by LaunchServices (-10825). Any ad-hoc swiftc invocation (render harness, probes) must pass the same -target.
 - Installed app: ~/Applications/gluu bot.app (single canonical installation; display name "gluu bot" since 0.1.34, bundle id still local.veda.dictation, executable still `Veda`, support folder still Application Support/Veda). Old Veda.app is parked in work/build-artifacts.noindex/Veda-renamed.bundle-backup.
 - Install helper: work/install-update.py. Build artifacts are deliberately .bundle-backup under work/build-artifacts.noindex to avoid duplicate launchable apps.
-- Current development version: 0.1.59. Check actual installed Info.plist/diagnostics rather than assuming installed version.
+- Current development version: 0.1.60. Check actual installed Info.plist/diagnostics rather than assuming installed version.
 - Diagnostics: /private/tmp/veda-diagnostics.json. No transcripts there; pendingCount is a count only.
 
 ## Current scope
@@ -172,3 +172,6 @@ User report: playfulness seemed to do nothing; the extra talk key could not be u
 
 ## Checkpoint — 2026-11-19, 0.1.59 installed (second costume: leader; costume switching hardened)
 `Costume.prime`: blue helmet, silver crest, silver ear cylinders with tall antennae; calm formal leader voice (ข้า/เจ้า/สหาย/ทีม), lines in `Costume.primeLines`, restyle variants of its own. Both costumes share `CritterPainter.visorPath`. User reported "can't change costume" — not reproduced (synthetic window clicks do not reach SwiftUI tap gestures, so that probe was dropped). Hardened every candidate: re-choosing the worn costume now answers instead of doing nothing, the right-click submenu is a Section (nested menus have failed for this user before), the capsule menu's hit rect uses its measured size (`CritterMenuBar`, `menuMeasured`), the settings segmented picker sizes to content. Measurement showed the old fixed widths were not actually clipping, so the root cause is still unknown — ask the user exactly where the press failed if it recurs. 377 tests. Not published (public = v0.1.56).
+
+## Checkpoint — 2026-11-19, v0.1.59 published; 0.1.60 installed (transform into a vehicle, dodge bullets)
+v0.1.59 released (public main 3a48c4c, gluu-bot-0.1.59.zip sha256 b5df378c…). 0.1.60: `Scene.transform` (vehicle per costume: black kart / yellow sports car / blue truck; drives both ways, U-turns) and `Scene.dodge` (three volleys: jump low bullets, roll away from aimed ones, duck in slow motion; order from the seed). `Shot.x` is on the `xFrac` scale (body travel range), drawn via `CritterPainter.travelX`. Proof of no hits: `work/tests/veda-render --probe-dodge` (live physics, 36/36 clean). The review sheets now keep lift and x; before that they placed every body on the floor and could mislead. 396 tests. Not published (public = v0.1.59).

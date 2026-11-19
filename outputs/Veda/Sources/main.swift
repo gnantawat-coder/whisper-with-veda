@@ -1711,6 +1711,39 @@ if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--probe-scen
     for _ in 0..<15 { RunLoop.main.run(until: Date().addingTimeInterval(0.2)); xs.append(Int(e.body.x)) }
     print("\(sc.rawValue) x every 0.2 s:", xs); exit(0)
 }
+// Dev probe: run the dodge in the live engine (real physics for the jump) and test every bullet against the body.
+if CommandLine.arguments.count == 2 && CommandLine.arguments[1] == "--probe-dodge" {
+    for start in [30.0, 130.0, 230.0] { for seed in 0..<12 {
+        let e = CritterEngine(); e.paused = true; e.weatherEnabled = false; e.eyeTracking = false
+        e.body.x = start; e.perform(scene: .dodge); e.reviewSetSceneSeed(seed)
+        var hits = 0, closest = Double.infinity, frames = 0
+        while e.scene != nil && frames < 60 * 12 {
+            e.reviewStep(dt: 1.0 / 60); frames += 1
+            let s = e.snapshot
+            guard let sc = s.scene else { continue }
+            let bottom = s.center.y + s.drawRadius, ry = s.drawRadius * (1 - 0.85 * sc.flat), cy = bottom - ry
+            for shot in sc.shots {
+                let x = CritterPainter.travelX(s, shot.x), y = s.groundY - shot.y * s.drawRadius
+                let d = hypot((x - s.center.x) / (s.drawRadius + 3), (y - cy) / (ry + 3))
+                closest = min(closest, d); if d < 1 { hits += 1; if hits % 6 == 1 { print(String(format: "   hit t=%.2f shot y=%.2f R x=%.0f · body cx=%.0f bottom=%.0f ground=%.0f flat=%.2f spin=%.0f", Double(frames) / 60, shot.y, x, s.center.x, bottom, s.groundY, sc.flat, sc.spinDeg)) } }
+            }
+        }
+        print("dodge start x \(Int(start)) seed \(seed): \(hits == 0 ? "no hits" : "\(hits) frames HIT") · closest \(String(format: "%.2f", closest)) body-radii")
+    } }
+    let e = CritterEngine(); e.paused = true; e.weatherEnabled = false
+    e.perform(scene: .transform)
+    var xs: [Int] = []
+    var n = 0
+    while e.scene != nil && n < 60 * 12 { e.reviewStep(dt: 1.0 / 60); n += 1; if n % 30 == 0 { xs.append(Int(e.body.x)) } }
+    print("transform x every 0.5 s:", xs)
+    let e2 = CritterEngine(); e2.paused = true; e2.weatherEnabled = false; e2.perform(scene: .transform)
+    for _ in 0..<Int(2.6 * 60) { e2.reviewStep(dt: 1.0 / 60) }
+    let s2 = e2.snapshot, sc2 = s2.scene!
+    let floor = s2.groundY, scaled = s2.drawRadius * sc2.scale
+    let drawnBottom = s2.center.y - s2.drawRadius * (sc2.scale - 1) + scaled
+    print(String(format: "transform at 2.6 s: R=%.1f scale=%.2f lift=%.2f centre.y=%.1f floor=%.1f drawn bottom %.1f px above floor, eyes ≈ %.1f px above floor, car top %.1f px", s2.drawRadius, sc2.scale, sc2.lift ?? -1, s2.center.y, floor, floor - drawnBottom, floor - (drawnBottom - scaled), 34 * s2.drawRadius / 46))
+    exit(0)
+}
 // Dev probe: how much does the character do on its own at each playfulness level, in simulated time?
 if CommandLine.arguments.count == 2 && CommandLine.arguments[1] == "--probe-playfulness" {
     func run(_ level: Int, seconds: Double, front: Bool = false, switchTo: Int? = nil) -> (moves: Int, moods: Int, scenes: Int, firstSceneAt: Double) {
