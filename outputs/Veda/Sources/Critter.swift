@@ -553,7 +553,9 @@ struct CritterView: View {
                 .onTapGesture(count: 2) { engine.choose(.play) }   // double-click = play with it
                 .onTapGesture { engine.toggleMenu() }
                 .contextMenu {
-                    Menu("ให้อาหาร") { ForEach(Critter.Care.Food.allCases, id: \.self) { f in Button(f.emoji + " " + f.name) { engine.act(.feed(f)) } } }
+                    // No submenus here: on this nonactivating panel a nested menu highlights but never opens.
+                    Section("ให้อาหาร") { ForEach(Critter.Care.Food.allCases, id: \.self) { f in Button(f.emoji + " " + f.name) { engine.act(.feed(f)) } } }
+                    Divider()
                     Button("อ่านหนังสือ") { engine.act(.read) }
                     Button("เล่นด้วยกัน") { engine.act(.play) }
                     Button("เล่นหัว") { engine.act(.tease) }

@@ -7,7 +7,7 @@ Native macOS local dictation app. User communicates in Thai and expects actual i
 - Build: bash outputs/Veda/scripts/build.sh; tests: bash outputs/Veda/scripts/test.sh. Both pin `-target arm64-apple-macos15.0` (LSMinimumSystemVersion 15.0): this Mac runs macOS 27.0 while the installed SDK defaults to macosx28.0, and an unpinned binary (minos 28) is refused by LaunchServices (-10825). Any ad-hoc swiftc invocation (render harness, probes) must pass the same -target.
 - Installed app: ~/Applications/gluu bot.app (single canonical installation; display name "gluu bot" since 0.1.34, bundle id still local.veda.dictation, executable still `Veda`, support folder still Application Support/Veda). Old Veda.app is parked in work/build-artifacts.noindex/Veda-renamed.bundle-backup.
 - Install helper: work/install-update.py. Build artifacts are deliberately .bundle-backup under work/build-artifacts.noindex to avoid duplicate launchable apps.
-- Current development version: 0.1.60. Check actual installed Info.plist/diagnostics rather than assuming installed version.
+- Current development version: 0.1.61. Check actual installed Info.plist/diagnostics rather than assuming installed version.
 - Diagnostics: /private/tmp/veda-diagnostics.json. No transcripts there; pendingCount is a count only.
 
 ## Current scope
@@ -175,3 +175,7 @@ User report: playfulness seemed to do nothing; the extra talk key could not be u
 
 ## Checkpoint — 2026-11-19, v0.1.59 published; 0.1.60 installed (transform into a vehicle, dodge bullets)
 v0.1.59 released (public main 3a48c4c, gluu-bot-0.1.59.zip sha256 b5df378c…). 0.1.60: `Scene.transform` (vehicle per costume: black kart / yellow sports car / blue truck; drives both ways, U-turns) and `Scene.dodge` (three volleys: jump low bullets, roll away from aimed ones, duck in slow motion; order from the seed). `Shot.x` is on the `xFrac` scale (body travel range), drawn via `CritterPainter.travelX`. Proof of no hits: `work/tests/veda-render --probe-dodge` (live physics, 36/36 clean). The review sheets now keep lift and x; before that they placed every body on the floor and could mislead. 396 tests. Not published (public = v0.1.59).
+Published 2026-11-19 as v0.1.60 (public main 36fa1e2, gluu-bot-0.1.60.zip sha256 9aa7152d…, latest download 302). Public = v0.1.60.
+
+## Checkpoint — 2026-11-19, 0.1.61 installed (right-click feed fixed); guide updated
+The right-click "ให้อาหาร" submenu highlighted but never opened (user screenshot) — nested menus do not open on the nonactivating character panel. Rule: never put a submenu in the character's context menu; use Sections. The friends' guide is https://claude.ai/artifact/PjjDcRzmpmjXdgk1pL6N4T (shared by link; source kept in the session scratchpad as gluu-bot-guide.html — read the artifact before republishing from another session). It now describes v0.1.60. An accidental private duplicate exists at https://claude.ai/artifact/SQnpR98ZhxW2HNVJB53B72 (delete only if the user asks). Not published (public = v0.1.60).
